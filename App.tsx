@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Search, Github, AlertCircle, Layout, MessageSquare, Menu, X, Play, Code2, ExternalLink } from 'lucide-react';
+import { Search, Github, AlertCircle, Layout, MessageSquare, Menu, X, Play, Code2, ExternalLink, Zap, Box, Globe } from 'lucide-react';
 import { parseRepoUrl, fetchRepoDetails, fetchRepoTree, fetchFileContent } from './services/github';
 import { createChatStream } from './services/ai';
 import { RepoDetails, FileNode, FileContent, ChatMessage } from './types';
@@ -16,6 +16,7 @@ function App() {
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [selectedFile, setSelectedFile] = useState<FileContent | null>(null);
   const [viewMode, setViewMode] = useState<'code' | 'preview'>('code');
+  const [previewRunner, setPreviewRunner] = useState<'official' | 'stackblitz' | 'codesandbox'>('stackblitz');
   
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -46,6 +47,13 @@ function App() {
     try {
       const details = await fetchRepoDetails(parsed.owner, parsed.repo);
       setRepoDetails(details);
+      
+      // Smart default for runner
+      if (details.homepage && (details.homepage.startsWith('http'))) {
+          setPreviewRunner('official');
+      } else {
+          setPreviewRunner('stackblitz');
+      }
       
       const tree = await fetchRepoTree(parsed.owner, parsed.repo, details.defaultBranch);
       setFileTree(tree);
@@ -154,13 +162,16 @@ function App() {
   const getAppPreviewUrl = () => {
     if (!repoDetails) return '';
     
-    // 1. Use Homepage if available and valid
-    if (repoDetails.homepage && (repoDetails.homepage.startsWith('http://') || repoDetails.homepage.startsWith('https://'))) {
+    if (previewRunner === 'official' && repoDetails.homepage) {
       return repoDetails.homepage;
     }
+
+    if (previewRunner === 'codesandbox') {
+         return `https://codesandbox.io/embed/github/${repoDetails.owner}/${repoDetails.name}/tree/${repoDetails.defaultBranch}?fontsize=14&hidenavigation=1&theme=dark`;
+    }
     
-    // 2. Fallback to StackBlitz
-    return `https://stackblitz.com/github/${repoDetails.owner}/${repoDetails.name}?embed=1&view=preview&hideExplorer=1&hidedevtools=1`;
+    // Fallback to StackBlitz
+    return `https://stackblitz.com/github/${repoDetails.owner}/${repoDetails.name}/tree/${repoDetails.defaultBranch}?embed=1&view=preview&hideExplorer=1&hidedevtools=1`;
   };
 
   return (
@@ -299,16 +310,49 @@ function App() {
              <div className="w-full h-full bg-gray-950 flex flex-col">
                {repoDetails ? (
                  <div className="flex-1 relative bg-white">
-                   <div className="absolute top-0 left-0 right-0 bg-gray-800 text-xs text-gray-400 p-2 flex justify-between items-center border-b border-gray-700 z-10">
-                      <span>Preview Source: {getAppPreviewUrl().includes('stackblitz') ? 'StackBlitz Container' : 'Official Deployment'}</span>
-                      <a href={getAppPreviewUrl().replace('&embed=1', '').replace('embed=1', '')} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1 hover:text-white">
+                   {/* Preview Controls Header */}
+                   <div className="absolute top-0 left-0 right-0 bg-gray-800 text-xs text-gray-400 p-2 flex justify-between items-center border-b border-gray-700 z-10 h-10">
+                      <div className="flex items-center gap-4">
+                        <div className="flex bg-gray-900 rounded-md p-0.5 border border-gray-700">
+                          {repoDetails.homepage && (
+                            <button 
+                              onClick={() => setPreviewRunner('official')}
+                              className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${previewRunner === 'official' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+                            >
+                              <Globe size={12} /> Official
+                            </button>
+                          )}
+                          <button 
+                            onClick={() => setPreviewRunner('stackblitz')}
+                            className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${previewRunner === 'stackblitz' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+                          >
+                            <Zap size={12} /> StackBlitz
+                          </button>
+                          <button 
+                            onClick={() => setPreviewRunner('codesandbox')}
+                            className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${previewRunner === 'codesandbox' ? 'bg-gray-700 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
+                          >
+                            <Box size={12} /> CodeSandbox
+                          </button>
+                        </div>
+                        
+                        {previewRunner === 'stackblitz' && (
+                           <div className="hidden lg:flex items-center gap-1.5 text-orange-400/80">
+                             <AlertCircle size={12} />
+                             <span className="text-[10px]">Stuck loading? Try CodeSandbox or enable 3rd-party cookies.</span>
+                           </div>
+                        )}
+                      </div>
+
+                      <a href={getAppPreviewUrl().replace('&embed=1', '').replace('embed=1', '')} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 hover:text-white transition-colors px-2">
                         Open External <ExternalLink size={12} />
                       </a>
                    </div>
+
                    <iframe 
                       src={getAppPreviewUrl()}
                       title="App Preview"
-                      className="w-full h-full pt-8"
+                      className="w-full h-full pt-10"
                       allow="accelerometer; ambient-light-sensor; camera; encrypted-media; geolocation; gyroscope; hid; microphone; midi; payment; usb; vr; xr-spatial-tracking"
                       sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts"
                    />
