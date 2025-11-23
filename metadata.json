@@ -1,0 +1,5 @@
+{
+  "name": "GitGenius - Repo Preview & AI Assistant",
+  "description": "A powerful GitHub repository previewer integrated with Gemini 2.5 Flash to analyze code, suggest improvements, and generate features.",
+  "requestFramePermissions": []
+}
