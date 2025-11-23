@@ -81,22 +81,32 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
   const isMarkdown = file.path.endsWith('.md');
   const canPreview = isHtml || isMarkdown;
 
-  // Function to rewrite relative URLs in HTML to point to GitHub raw content
+  // robustly handle preview content with CDN for assets
   const getPreviewContent = () => {
     if (!repoDetails || !isHtml) return contentToRender;
     
-    const rawBaseUrl = `https://raw.githubusercontent.com/${repoDetails.owner}/${repoDetails.name}/${repoDetails.defaultBranch}`;
+    // Use JsDelivr to ensure correct MIME types for CSS/JS assets
+    // raw.githubusercontent.com serves files as text/plain which breaks <link> and <script>
+    const baseUrl = `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}/`;
     
-    // Simple regex replacement for src and href attributes
-    // This is a basic implementation and might not catch everything
-    let processedHtml = contentToRender
-      .replace(/(src|href)=["'](?!\/|http|https|#)([^"']+)["']/g, (match, attr, path) => {
-         // handle ./ paths
-         const cleanPath = path.startsWith('./') ? path.slice(2) : path;
-         return `${attr}="${rawBaseUrl}/${cleanPath}"`;
-      });
-      
-    return processedHtml;
+    // Inject <base> tag to automatically resolve all relative links (src, href) to the CDN
+    const baseTag = `<base href="${baseUrl}" target="_blank" />`;
+    
+    if (contentToRender.includes('<head>')) {
+      return contentToRender.replace('<head>', `<head>${baseTag}`);
+    } else {
+      // If no head exists, wrap content in a basic structure
+      return `<!DOCTYPE html><html><head>${baseTag}</head><body>${contentToRender}</body></html>`;
+    }
+  };
+
+  const transformMarkdownUrl = (url: string) => {
+    if (!repoDetails) return url;
+    // Don't touch absolute URLs
+    if (url.startsWith('http') || url.startsWith('https') || url.startsWith('#')) return url;
+    
+    const cleanPath = url.startsWith('./') ? url.slice(2) : url;
+    return `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}/${cleanPath}`;
   };
 
   return (
@@ -223,11 +233,13 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
                 title="preview"
                 srcDoc={getPreviewContent()}
                 className="w-full h-full border-none block"
-                sandbox="allow-scripts allow-same-origin"
+                sandbox="allow-scripts allow-same-origin allow-popups allow-forms"
               />
             ) : (
-              <div className="p-8 prose max-w-none h-full overflow-auto">
-                <ReactMarkdown>{contentToRender}</ReactMarkdown>
+              <div className="p-8 prose max-w-none h-full overflow-auto bg-gray-50 text-gray-900">
+                <ReactMarkdown urlTransform={transformMarkdownUrl}>
+                  {contentToRender}
+                </ReactMarkdown>
               </div>
             )}
           </div>

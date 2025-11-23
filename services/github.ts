@@ -81,10 +81,17 @@ export const fetchFileContent = async (url: string): Promise<string> => {
   const response = await fetch(url);
   if (!response.ok) throw new Error('Failed to fetch file content');
   const data = await response.json();
-  // content is base64 encoded
+  
   try {
-    return atob(data.content.replace(/\s/g, ''));
+    // Correctly handle UTF-8 content in Base64 (fixes emojis and special characters)
+    const binaryString = atob(data.content.replace(/\s/g, ''));
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    return new TextDecoder().decode(bytes);
   } catch (e) {
+    console.error("Decoding error", e);
     return "Binary content or encoding not supported for preview.";
   }
 };
