@@ -2,9 +2,7 @@ import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
 import { ChatMessage } from '../types';
 
 // Ensure API Key is available
-const apiKey = process.env.API_KEY;
-
-const ai = new GoogleGenAI({ apiKey: apiKey || 'dummy-key' });
+const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
 export const createChatStream = async (
   messages: ChatMessage[], 
