@@ -24,6 +24,7 @@ export const fetchRepoDetails = async (owner: string, repo: string): Promise<Rep
     description: data.description,
     defaultBranch: data.default_branch,
     stars: data.stargazers_count,
+    homepage: data.homepage,
   };
 };
 
@@ -86,6 +87,7 @@ export const fetchFileContent = async (url: string): Promise<string> => {
     // If the API explicitly says base64, use our robust decoder
     if (data.encoding === 'base64' && data.content) {
         const cleanContent = data.content.replace(/\s/g, '');
+        // Use a more robust UTF-8 decode strategy
         const binaryString = atob(cleanContent);
         const bytes = new Uint8Array(binaryString.length);
         for (let i = 0; i < binaryString.length; i++) {
@@ -95,7 +97,6 @@ export const fetchFileContent = async (url: string): Promise<string> => {
     } 
     
     // Fallback if not base64 or if structure is different
-    // (Note: Git Blob API usually returns base64)
     if (data.content) {
         return atob(data.content.replace(/\s/g, ''));
     }
@@ -103,6 +104,11 @@ export const fetchFileContent = async (url: string): Promise<string> => {
     return '';
   } catch (e) {
     console.error("Decoding error", e);
+    // Attempt raw text fallback for some edge cases
+    try {
+        if (data.content) return atob(data.content);
+    } catch (e2) {}
+    
     return "Error: Could not decode file content. It might be binary or too large to preview.";
   }
 };

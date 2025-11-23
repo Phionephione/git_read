@@ -14,6 +14,7 @@ export interface RepoDetails {
   description: string;
   defaultBranch: string;
   stars: number;
+  homepage?: string;
 }
 
 export interface ChatMessage {
