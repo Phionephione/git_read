@@ -75,7 +75,6 @@ const FileTree: React.FC<FileTreeProps> = ({ nodes, onSelectFile, selectedPath }
         <TreeNode 
           key={node.path} 
           node={node} 
-          onSelectFile={onSelectFile} 
           onSelect={onSelectFile}
           selectedPath={selectedPath}
           depth={0}

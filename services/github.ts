@@ -83,15 +83,26 @@ export const fetchFileContent = async (url: string): Promise<string> => {
   const data = await response.json();
   
   try {
-    // Correctly handle UTF-8 content in Base64 (fixes emojis and special characters)
-    const binaryString = atob(data.content.replace(/\s/g, ''));
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
+    // If the API explicitly says base64, use our robust decoder
+    if (data.encoding === 'base64' && data.content) {
+        const cleanContent = data.content.replace(/\s/g, '');
+        const binaryString = atob(cleanContent);
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return new TextDecoder('utf-8').decode(bytes);
+    } 
+    
+    // Fallback if not base64 or if structure is different
+    // (Note: Git Blob API usually returns base64)
+    if (data.content) {
+        return atob(data.content.replace(/\s/g, ''));
     }
-    return new TextDecoder().decode(bytes);
+    
+    return '';
   } catch (e) {
     console.error("Decoding error", e);
-    return "Binary content or encoding not supported for preview.";
+    return "Error: Could not decode file content. It might be binary or too large to preview.";
   }
 };

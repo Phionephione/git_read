@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FileContent, RepoDetails } from '../types';
-import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX } from 'lucide-react';
+import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX, AlertTriangle } from 'lucide-react';
 import { modifyCode } from '../services/ai';
 
 interface CodeViewerProps {
@@ -81,32 +81,65 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
   const isMarkdown = file.path.endsWith('.md');
   const canPreview = isHtml || isMarkdown;
 
-  // robustly handle preview content with CDN for assets
+  // Check if the content looks like a modern framework entry point (React, Vue, etc)
+  const isFrameworkFile = isHtml && (
+    contentToRender.includes('type="module"') || 
+    contentToRender.includes('src="/src') ||
+    contentToRender.includes('.tsx') ||
+    contentToRender.includes('.vue') ||
+    contentToRender.includes('%PUBLIC_URL%')
+  );
+
   const getPreviewContent = () => {
     if (!repoDetails || !isHtml) return contentToRender;
     
-    // Use JsDelivr to ensure correct MIME types for CSS/JS assets
-    // raw.githubusercontent.com serves files as text/plain which breaks <link> and <script>
-    const baseUrl = `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}/`;
+    // 1. Calculate Base URL for the specific directory of this file
+    // Example: if file is "src/pages/index.html", base is ".../src/pages/"
+    const pathParts = file.path.split('/');
+    pathParts.pop(); // Remove filename
+    const dirPath = pathParts.join('/');
+    const dirSuffix = dirPath ? `${dirPath}/` : '';
+
+    const cdnRoot = `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}/`;
+    const cdnBase = `${cdnRoot}${dirSuffix}`;
     
-    // Inject <base> tag to automatically resolve all relative links (src, href) to the CDN
-    const baseTag = `<base href="${baseUrl}" target="_blank" />`;
+    let processedContent = contentToRender;
+
+    // 2. Rewrite root-relative paths (starting with /) to be absolute CDN paths
+    // Regex matches src="/..." or href="/..." 
+    // This fixes things like <script src="/src/main.ts"> or <link href="/styles.css">
+    processedContent = processedContent.replace(
+      /(src|href)=["']\/([^"']*)["']/g, 
+      `$1="${cdnRoot}$2"`
+    );
+
+    // 3. Inject <base> tag for relative paths (./ or just filename)
+    const baseTag = `<base href="${cdnBase}" target="_blank" />`;
     
-    if (contentToRender.includes('<head>')) {
-      return contentToRender.replace('<head>', `<head>${baseTag}`);
+    if (processedContent.includes('<head>')) {
+      return processedContent.replace('<head>', `<head>${baseTag}`);
     } else {
-      // If no head exists, wrap content in a basic structure
-      return `<!DOCTYPE html><html><head>${baseTag}</head><body>${contentToRender}</body></html>`;
+      return `<!DOCTYPE html><html><head>${baseTag}</head><body>${processedContent}</body></html>`;
     }
   };
 
   const transformMarkdownUrl = (url: string) => {
     if (!repoDetails) return url;
-    // Don't touch absolute URLs
     if (url.startsWith('http') || url.startsWith('https') || url.startsWith('#')) return url;
     
-    const cleanPath = url.startsWith('./') ? url.slice(2) : url;
-    return `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}/${cleanPath}`;
+    // Handle root relative in MD
+    if (url.startsWith('/')) {
+        return `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}${url}`;
+    }
+
+    // Handle relative to file location
+    const pathParts = file.path.split('/');
+    pathParts.pop();
+    const dirPath = pathParts.join('/');
+    const cleanUrl = url.startsWith('./') ? url.slice(2) : url;
+    const separator = dirPath ? '/' : '';
+    
+    return `https://cdn.jsdelivr.net/gh/${repoDetails.owner}/${repoDetails.name}@${repoDetails.defaultBranch}/${dirPath}${separator}${cleanUrl}`;
   };
 
   return (
@@ -227,7 +260,18 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
       {/* Content Area */}
       <div className="flex-1 overflow-hidden relative">
         {activeTab === 'preview' && canPreview ? (
-          <div className="h-full w-full bg-white">
+          <div className="h-full w-full bg-white relative">
+            {/* Framework Warning Overlay */}
+            {isFrameworkFile && (
+                <div className="absolute inset-x-0 top-0 z-10 bg-yellow-900/90 border-b border-yellow-700 p-3 text-yellow-200 text-xs flex items-center justify-center gap-2 backdrop-blur-sm">
+                    <AlertTriangle size={14} />
+                    <span>
+                        <strong>Note:</strong> This looks like a framework file (React/Vue/etc). 
+                        Browsers cannot run source code directly. This preview may fail or show a blank screen.
+                    </span>
+                </div>
+            )}
+            
             {isHtml ? (
               <iframe 
                 title="preview"
