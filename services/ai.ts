@@ -13,10 +13,14 @@ const parseDataUrl = (dataUrl: string): { mimeType: string; data: string } | nul
 // Tool: Update File
 const updateFileTool: FunctionDeclaration = {
   name: 'update_file',
-  description: 'Update the code content of the currently active/open file. Use this when the user asks to modify the code. You cannot create new files, only update the one currently being viewed.',
+  description: 'Overwrite the content of a file at the given path. Use this to modify existing files or create new ones. This is the ONLY way to change code. Do not output code in text.',
   parameters: {
     type: Type.OBJECT,
     properties: {
+      path: {
+        type: Type.STRING,
+        description: 'The full path of the file to update or create (e.g., "src/components/Button.tsx"). If not provided, it defaults to the currently open file.',
+      },
       code: {
         type: Type.STRING,
         description: 'The full modified code content. Do not include markdown formatting.',
@@ -81,25 +85,23 @@ export const createChatStream = async (
   const systemInstruction = `You are an expert Senior Software Engineer and Code Reviewer. 
   You are assisting a user in viewing and improving a GitHub repository.
   
-  OUTPUT FORMATTING:
-  - Use Markdown for all responses.
-  - Use code blocks with language specifiers for code.
-  - Be concise but helpful.
+  MANDATORY OPERATIONAL PROTOCOL:
+  1. **ACTION OVER TALK**: If the user asks to change, fix, or add code, you MUST use the 'update_file' tool. 
+     - DO NOT output the code block in your text response.
+     - DO NOT say "Here is the code".
+     - JUST call the tool.
   
-  CONTEXT AWARENESS:
-  You have access to the full file structure of the repository:
+  2. **FULL CONTEXT**: You have access to the file structure:
   ${availableFiles}${truncatedWarning}
   
-  TOOLS:
-  - 'read_file': Call this to read the content of ANY file in the list. You MUST call this to gather context if you don't have the file content yet.
-  - 'update_file': Call this to modify the currently active file (the one the user is looking at).
+  3. **TOOLS**:
+     - 'read_file': Call this to read ANY file content. Don't guess. Read imports/definitions before editing.
+     - 'update_file': Use this to write code to a file. 
   
-  CRITICAL STRATEGY:
-  1. **Full App Awareness**: The user might be looking at a specific file (e.g., README.md), but asking about the whole app (e.g., "How can I improve this?"). 
-     - DO NOT limit your answer to just the open file.
-     - IF the user asks a general question, use 'read_file' to check key files like 'package.json', 'src/App.tsx', 'index.html', or 'src/index.tsx' to understand the project architecture FIRST.
-  2. **Don't Guess**: If you need to know how a component is implemented, read the file.
-  3. **Updating**: You can only update the *active* file. If the user wants to update a different file, ask them to open it first, or explain what changes they should make manually.
+  STRATEGY:
+  - If the user asks "Fix this", READ the file first if you don't have it.
+  - If the user asks "Add a feature", determine which files need changes, READ them, then UPDATE them using the tool.
+  - You can update multiple files in sequence if needed (though currently the UI handles one turn at a time, aim for the most critical update first).
   `;
 
   const chat = ai.chats.create({
@@ -173,7 +175,6 @@ export const createChatStream = async (
                          }
 
                          // Send tool response back to model
-                         // Correctly format as a Part with functionResponse
                          const responsePart: Part = {
                              functionResponse: {
                                  name: call.name,

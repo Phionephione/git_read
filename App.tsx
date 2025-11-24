@@ -205,26 +205,20 @@ function App() {
 
       const onToolCall = (toolCall: any) => {
           if (toolCall.name === 'update_file') {
-              const { code, description } = toolCall.args;
-              // If the model updates a file, check if it matches the current one or another one
-              // Currently, update_file tool definition doesn't strictly enforce 'path' argument in the tool def in services/ai.ts 
-              // Wait, the tool def in services/ai.ts only has 'code' and 'description'. It relies on context.
-              // To make it fully robust for ANY file, we should update the tool def to include 'path'.
-              // But for now, let's assume it updates the *active* file if explicitly asked, OR we can infer.
-              // Actually, best to rely on 'selectedFile.path' if tool doesn't provide path.
-              // Let's assume for this specific turn the AI is editing the file we talked about.
+              const { code, description, path } = toolCall.args;
               
-              // NOTE: For a full multi-file edit, the AI should probably be able to specify the path in update_file.
-              // I will stick to updating the SELECTED file for now as per the "Edit with AI" context.
-              // If triggered from global context, we might need the AI to say WHICH file. 
-              // *Correction*: The AI service tool definition needs 'path' to be truly "access all files".
-              // But since I cannot change services/ai.ts right now without sending it again, 
-              // I will assume it operates on the 'context' file or I will add logic to 'CodeViewer' trigger to focus the file first.
-              
-              if (selectedFile) {
-                  updateFileContent(selectedFile.path, code);
-                  if (selectedFile.path.endsWith('.html')) {
-                      setViewMode('code'); 
+              // Target path: prefer explicit arg, fallback to active file
+              const targetPath = path || selectedFile?.path;
+
+              if (targetPath) {
+                  updateFileContent(targetPath, code);
+                  
+                  // If we updated the currently viewing file, ensure UI reflects it
+                  if (selectedFile && targetPath === selectedFile.path) {
+                     // Force refresh if needed, state update handled by modifiedFiles effect in CodeViewer
+                     if (targetPath.endsWith('.html')) {
+                        setViewMode('code'); 
+                     }
                   }
               }
           }
