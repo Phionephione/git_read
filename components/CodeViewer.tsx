@@ -1,7 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FileContent, RepoDetails } from '../types';
-import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX, AlertTriangle } from 'lucide-react';
+import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX, AlertTriangle, Paperclip } from 'lucide-react';
 import { modifyCode } from '../services/ai';
 
 interface CodeViewerProps {
@@ -16,8 +16,10 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
   // AI Edit State
   const [showAiInput, setShowAiInput] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
+  const [aiImage, setAiImage] = useState<string | null>(null);
   const [isModifying, setIsModifying] = useState(false);
   const [includeContext, setIncludeContext] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Reset state when file changes
   useEffect(() => {
@@ -25,6 +27,7 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     setActiveTab('code');
     setShowAiInput(false);
     setAiPrompt('');
+    setAiImage(null);
     setIncludeContext(true);
   }, [file?.path]);
 
@@ -34,10 +37,11 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     setIsModifying(true);
     try {
       const currentCode = includeContext ? (customContent ?? file.content) : '';
-      const newCode = await modifyCode(currentCode, aiPrompt, file.path);
+      const newCode = await modifyCode(currentCode, aiPrompt, file.path, aiImage || undefined);
       setCustomContent(newCode);
       setShowAiInput(false);
       setAiPrompt('');
+      setAiImage(null);
       // Switch to preview automatically if it's an HTML file
       if (file.path.endsWith('.html')) {
         setActiveTab('preview');
@@ -48,6 +52,18 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     } finally {
       setIsModifying(false);
     }
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAiImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+    if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
   if (!file) {
@@ -106,8 +122,6 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     let processedContent = contentToRender;
 
     // 2. Rewrite root-relative paths (starting with /) to be absolute CDN paths
-    // Regex matches src="/..." or href="/..." 
-    // This fixes things like <script src="/src/main.ts"> or <link href="/styles.css">
     processedContent = processedContent.replace(
       /(src|href)=["']\/([^"']*)["']/g, 
       `$1="${cdnRoot}$2"`
@@ -199,15 +213,44 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
       {showAiInput && (
         <div className="shrink-0 bg-gray-800/50 border-b border-gray-700 p-4 animate-in slide-in-from-top-2 duration-200">
           <div className="max-w-4xl mx-auto flex flex-col gap-3">
+            
+            {aiImage && (
+               <div className="flex items-center gap-2">
+                 <div className="relative group">
+                   <img src={aiImage} alt="Ref" className="h-16 w-auto rounded border border-gray-600" />
+                   <button 
+                     onClick={() => setAiImage(null)}
+                     className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full p-0.5 opacity-0 group-hover:opacity-100 transition-opacity"
+                   >
+                     <X size={12} />
+                   </button>
+                 </div>
+                 <span className="text-xs text-gray-400">Image Reference Attached</span>
+               </div>
+            )}
+
             <div className="flex gap-2">
-              <div className="relative flex-1">
-                <Sparkles className="absolute left-3 top-1/2 -translate-y-1/2 text-purple-400" size={16} />
+              <div className="relative flex-1 flex items-center">
+                 <input 
+                   type="file" 
+                   ref={fileInputRef} 
+                   onChange={handleFileChange} 
+                   accept="image/*" 
+                   className="hidden" 
+                 />
+                 <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="absolute left-2 p-1.5 text-gray-400 hover:text-purple-400 rounded transition-colors"
+                    title="Upload reference image"
+                 >
+                    <Paperclip size={16} />
+                 </button>
                 <input
                   type="text"
                   value={aiPrompt}
                   onChange={(e) => setAiPrompt(e.target.value)}
                   onKeyDown={(e) => e.key === 'Enter' && handleAiModify()}
-                  placeholder="Describe how to change this file (e.g., 'Add a dark mode button', 'Fix the indentation')..."
+                  placeholder="Describe changes (e.g., 'Make it look like this screenshot', 'Fix indentation')..."
                   className="w-full bg-gray-900 border border-gray-600 rounded-lg py-2 pl-10 pr-4 text-sm text-gray-100 placeholder-gray-500 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500"
                   autoFocus
                 />

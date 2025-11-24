@@ -4,6 +4,12 @@ import { ChatMessage } from '../types';
 // Ensure API Key is available
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
+const parseDataUrl = (dataUrl: string) => {
+  const matches = dataUrl.match(/^data:(.+);base64,(.+)$/);
+  if (!matches) return null;
+  return { mimeType: matches[1], data: matches[2] };
+};
+
 export const createChatStream = async (
   messages: ChatMessage[], 
   currentFileContext?: { path: string; content: string }
@@ -14,10 +20,20 @@ export const createChatStream = async (
   
   // Construct a prompt history
   const lastMsg = messages[messages.length - 1];
-  const history = messages.slice(0, -1).map(m => ({
-    role: m.role,
-    parts: [{ text: m.text }]
-  }));
+  
+  const history = messages.slice(0, -1).map(m => {
+    const parts: any[] = [{ text: m.text }];
+    if (m.image) {
+      const imgData = parseDataUrl(m.image);
+      if (imgData) {
+        parts.push({ inlineData: imgData });
+      }
+    }
+    return {
+      role: m.role,
+      parts: parts
+    };
+  });
 
   const chat = ai.chats.create({
     model,
@@ -32,14 +48,15 @@ export const createChatStream = async (
       - Be concise but helpful.
       
       If provided with file context, specifically refer to lines of code if possible.
+      If provided with an image, analyze the visual elements, UI/UX, or errors shown.
       `
     }
   });
 
-  let prompt = lastMsg.text;
+  let textPrompt = lastMsg.text;
   
   if (currentFileContext) {
-    prompt = `
+    textPrompt = `
     [CONTEXT]
     Current File: ${currentFileContext.path}
     File Content:
@@ -53,7 +70,16 @@ export const createChatStream = async (
     `;
   }
 
-  const result = await chat.sendMessageStream({ message: prompt });
+  // Construct message with potential image part
+  const msgParts: any[] = [{ text: textPrompt }];
+  if (lastMsg.image) {
+    const imgData = parseDataUrl(lastMsg.image);
+    if (imgData) {
+      msgParts.push({ inlineData: imgData });
+    }
+  }
+
+  const result = await chat.sendMessageStream({ message: { parts: msgParts } });
   
   // Create an async iterable that yields text chunks
   return {
@@ -68,8 +94,8 @@ export const createChatStream = async (
   };
 };
 
-export const modifyCode = async (code: string, instruction: string, filename: string): Promise<string> => {
-  // Using gemini-3-pro-preview for superior code generation capabilities
+export const modifyCode = async (code: string, instruction: string, filename: string, image?: string): Promise<string> => {
+  // Using gemini-3-pro-preview for superior code generation and vision capabilities
   const model = 'gemini-3-pro-preview'; 
   
   const chat = ai.chats.create({
@@ -83,11 +109,12 @@ export const modifyCode = async (code: string, instruction: string, filename: st
       Just the raw code.
       
       Ensure you preserve the existing functionality unless asked to change it.
+      If an image is provided, use it as a visual reference for the requested changes (e.g., matching colors, layout, or fixing UI bugs).
       `
     }
   });
 
-  const prompt = code ? `
+  const textPrompt = code ? `
   [ORIGINAL CODE]
   ${code}
 
@@ -100,7 +127,16 @@ export const modifyCode = async (code: string, instruction: string, filename: st
   Generate the full code for the file "${filename}".
   `;
 
-  const result = await chat.sendMessage({ message: prompt });
+  const msgParts: any[] = [{ text: textPrompt }];
+  
+  if (image) {
+    const imgData = parseDataUrl(image);
+    if (imgData) {
+      msgParts.push({ inlineData: imgData });
+    }
+  }
+
+  const result = await chat.sendMessage({ message: { parts: msgParts } });
   let text = result.text || '';
   
   // Robustly strip markdown code blocks if the model includes them

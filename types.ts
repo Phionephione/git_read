@@ -23,6 +23,7 @@ export interface ChatMessage {
   text: string;
   timestamp: number;
   isStreaming?: boolean;
+  image?: string; // Data URL
 }
 
 export interface FileContent {

@@ -54,75 +54,76 @@ function App() {
       } else {
           setPreviewRunner('stackblitz');
       }
-      
+
       const tree = await fetchRepoTree(parsed.owner, parsed.repo, details.defaultBranch);
       setFileTree(tree);
-      
-      // Try to load README if exists
+
+      // Try to find README
       const readmeNode = tree.find(n => n.name.toLowerCase() === 'readme.md');
       if (readmeNode) {
-        handleFileSelect(readmeNode);
+        handleSelectFile(readmeNode);
       }
-    } catch (err: any) {
-      setError(err.message || 'Failed to load repository');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to load repository');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleFileSelect = async (node: FileNode) => {
-    setSelectedFile({ path: node.path, content: '', loading: true });
-    
-    // Switch back to code view if file is selected
-    setViewMode('code');
+  const handleSelectFile = async (node: FileNode) => {
+    if (node.type === 'tree') return;
 
-    // Mobile: close sidebar on select
-    if (window.innerWidth < 768) {
-      setIsSidebarOpen(false);
+    // Reset view to code when selecting a file (unless we are already in live app mode)
+    if (viewMode === 'preview' && previewRunner !== 'official') {
+       // If user clicks a file while in "Live App" mode, we might want to stay there 
+       // or switch back to code. For now, let's switch back to code to see the file.
+       setViewMode('code');
     }
+
+    setSelectedFile(prev => ({ 
+      path: node.path, 
+      content: prev?.path === node.path ? prev.content : '', 
+      loading: true 
+    }));
 
     try {
       const content = await fetchFileContent(node.url);
-      setSelectedFile({
-        path: node.path,
-        content,
-        loading: false
-      });
+      setSelectedFile({ path: node.path, content, loading: false });
     } catch (err) {
-      setSelectedFile({
-        path: node.path,
-        content: '',
-        loading: false,
-        error: 'Failed to load file content'
+      setSelectedFile({ 
+        path: node.path, 
+        content: '', 
+        loading: false, 
+        error: 'Failed to load file content' 
       });
     }
   };
 
-  const handleSendMessage = useCallback(async (text: string) => {
-    const newMessage: ChatMessage = {
+  const handleSendMessage = async (text: string, image?: string) => {
+    const newUserMsg: ChatMessage = {
       id: Date.now().toString(),
       role: 'user',
       text,
       timestamp: Date.now(),
+      image
     };
 
-    setMessages(prev => [...prev, newMessage]);
+    setMessages(prev => [...prev, newUserMsg]);
     setIsStreaming(true);
 
     try {
-      // Prepare context: currently open file
+      // Pass the currently selected file content as context if available
       const context = selectedFile && !selectedFile.loading && !selectedFile.error 
         ? { path: selectedFile.path, content: selectedFile.content }
         : undefined;
 
-      const stream = await createChatStream([...messages, newMessage], context);
+      const stream = await createChatStream([...messages, newUserMsg], context);
       
-      const botMessageId = (Date.now() + 1).toString();
+      let botMsgId = (Date.now() + 1).toString();
       let fullResponse = '';
-      
-      // Add initial empty bot message
+
       setMessages(prev => [...prev, {
-        id: botMessageId,
+        id: botMsgId,
         role: 'model',
         text: '',
         timestamp: Date.now(),
@@ -132,251 +133,259 @@ function App() {
       for await (const chunk of stream) {
         fullResponse += chunk;
         setMessages(prev => prev.map(msg => 
-          msg.id === botMessageId 
-            ? { ...msg, text: fullResponse }
-            : msg
+          msg.id === botMsgId ? { ...msg, text: fullResponse } : msg
         ));
       }
-      
-      // Finalize
-      setMessages(prev => prev.map(msg => 
-        msg.id === botMessageId 
-          ? { ...msg, isStreaming: false }
-          : msg
-      ));
 
+      setMessages(prev => prev.map(msg => 
+        msg.id === botMsgId ? { ...msg, isStreaming: false } : msg
+      ));
+      
     } catch (err) {
       console.error(err);
       setMessages(prev => [...prev, {
         id: Date.now().toString(),
         role: 'model',
-        text: "Sorry, I encountered an error communicating with Gemini.",
+        text: 'Sorry, I encountered an error analyzing the code. Please try again.',
         timestamp: Date.now()
       }]);
     } finally {
       setIsStreaming(false);
     }
-  }, [messages, selectedFile]);
+  };
 
-  // Helper to determine the best preview URL
-  const getAppPreviewUrl = () => {
-    if (!repoDetails) return '';
-    
-    if (previewRunner === 'official' && repoDetails.homepage) {
-      return repoDetails.homepage;
-    }
-
-    if (previewRunner === 'codesandbox') {
-         return `https://codesandbox.io/embed/github/${repoDetails.owner}/${repoDetails.name}/tree/${repoDetails.defaultBranch}?fontsize=14&hidenavigation=1&theme=dark`;
-    }
-    
-    // Fallback to StackBlitz
-    return `https://stackblitz.com/github/${repoDetails.owner}/${repoDetails.name}/tree/${repoDetails.defaultBranch}?embed=1&view=preview&hideExplorer=1&hidedevtools=1`;
+  const getLivePreviewUrl = () => {
+     if (!repoDetails) return '';
+     
+     if (previewRunner === 'official') {
+         return repoDetails.homepage || '';
+     }
+     if (previewRunner === 'stackblitz') {
+         return `https://stackblitz.com/github/${repoDetails.owner}/${repoDetails.name}?embed=1&view=preview&hideExplorer=1&hidedevtools=1`;
+     }
+     if (previewRunner === 'codesandbox') {
+         return `https://codesandbox.io/embed/github/${repoDetails.owner}/${repoDetails.name}?fontsize=14&hidenavigation=1&theme=dark&view=preview`;
+     }
+     return '';
   };
 
   return (
-    <div className="flex flex-col h-screen bg-gray-950 text-gray-100">
+    <div className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans selection:bg-blue-500/30">
       {/* Header */}
-      <header className="h-16 border-b border-gray-800 bg-gray-950 flex items-center px-4 justify-between shrink-0">
-        <div className="flex items-center gap-2">
+      <header className="h-16 border-b border-gray-800 flex items-center px-4 gap-4 bg-gray-950 shrink-0 relative z-20">
+        <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
           <Github className="text-white" />
-          <span className="font-bold text-xl hidden sm:inline">GitGenius</span>
+          <span className="bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">GitGenius</span>
         </div>
 
-        <form onSubmit={loadRepo} className="flex-1 max-w-xl mx-4">
-          <div className="relative">
-            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-500" size={18} />
-            <input 
-              type="text" 
-              placeholder="https://github.com/username/repository"
-              className="w-full bg-gray-900 border border-gray-700 rounded-lg py-2 pl-10 pr-4 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all text-sm"
-              value={repoUrl}
-              onChange={e => setRepoUrl(e.target.value)}
-            />
+        <form onSubmit={loadRepo} className="flex-1 max-w-2xl mx-auto relative group">
+          <div className="absolute inset-y-0 left-3 flex items-center pointer-events-none text-gray-500 group-focus-within:text-blue-400 transition-colors">
+            <Search size={18} />
           </div>
+          <input
+            type="text"
+            value={repoUrl}
+            onChange={(e) => setRepoUrl(e.target.value)}
+            placeholder="https://github.com/owner/repo"
+            className="w-full bg-gray-900 border border-gray-700 rounded-xl py-2 pl-10 pr-4 text-sm focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 transition-all placeholder-gray-600"
+          />
         </form>
 
-        <div className="flex items-center gap-4">
-          {/* View Toggle */}
-          {repoDetails && (
-            <div className="hidden md:flex bg-gray-900 rounded-lg p-1 border border-gray-700">
-              <button
-                onClick={() => setViewMode('code')}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${viewMode === 'code' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'}`}
-              >
-                <Code2 size={16} />
-                Code
-              </button>
-              <button
-                onClick={() => setViewMode('preview')}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 transition-all ${viewMode === 'preview' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-400 hover:text-white'}`}
-              >
-                <Play size={16} />
-                Live App
-              </button>
-            </div>
-          )}
+        <div className="flex items-center gap-3">
+           {/* View Mode Switcher - Only visible when repo is loaded */}
+           {repoDetails && (
+             <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-700">
+                <button 
+                  onClick={() => setViewMode('code')}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                    viewMode === 'code' ? 'bg-gray-800 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  <Code2 size={16} /> Code
+                </button>
+                <button 
+                  onClick={() => setViewMode('preview')}
+                  className={`flex items-center gap-2 px-3 py-1.5 rounded-md text-sm font-medium transition-all ${
+                    viewMode === 'preview' ? 'bg-emerald-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'
+                  }`}
+                >
+                  <Play size={16} /> Live App
+                </button>
+             </div>
+           )}
 
            <button 
-             onClick={() => setIsChatOpen(!isChatOpen)}
-             className={`p-2 rounded-lg hover:bg-gray-800 transition-colors ${isChatOpen ? 'text-blue-400 bg-gray-800' : 'text-gray-400'}`}
-             title="Toggle AI Chat"
-           >
-             <MessageSquare size={20} />
-           </button>
+            onClick={() => setIsChatOpen(!isChatOpen)}
+            className={`p-2 rounded-lg transition-colors relative ${isChatOpen ? 'bg-blue-600 text-white' : 'hover:bg-gray-800 text-gray-400'}`}
+          >
+            <MessageSquare size={20} />
+            {!isChatOpen && messages.length > 0 && (
+                <span className="absolute top-1 right-1 w-2 h-2 bg-blue-500 rounded-full"></span>
+            )}
+          </button>
         </div>
       </header>
 
-      {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden relative">
+      {/* Main Layout */}
+      <div className="flex-1 flex overflow-hidden">
         
-        {/* Error State */}
-        {error && (
-          <div className="absolute inset-0 z-50 bg-gray-950/80 backdrop-blur-sm flex items-center justify-center">
-            <div className="bg-gray-900 border border-red-900/50 p-6 rounded-xl shadow-2xl max-w-md w-full">
-              <div className="flex items-center gap-3 text-red-400 mb-2">
-                <AlertCircle />
-                <h3 className="font-bold text-lg">Error</h3>
+        {/* Sidebar */}
+        <div className={`
+          ${isSidebarOpen ? 'w-64' : 'w-0'} 
+          bg-gray-900 border-r border-gray-800 transition-all duration-300 flex flex-col shrink-0
+        `}>
+          <div className="p-3 border-b border-gray-800 flex items-center justify-between">
+            <span className="text-xs font-semibold text-gray-400 uppercase tracking-wider">Explorer</span>
+            <button onClick={() => setIsSidebarOpen(false)} className="text-gray-500 hover:text-gray-300 md:hidden">
+              <X size={16} />
+            </button>
+          </div>
+          
+          <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
+            {loading ? (
+              <div className="text-center py-8 text-gray-500 text-sm animate-pulse">Scanning repository...</div>
+            ) : fileTree.length > 0 ? (
+              <FileTree 
+                nodes={fileTree} 
+                onSelectFile={handleSelectFile} 
+                selectedPath={selectedFile?.path}
+              />
+            ) : (
+              <div className="text-center py-8 text-gray-600 text-sm">
+                Enter a GitHub URL to start
               </div>
-              <p className="text-gray-300 mb-4">{error}</p>
-              <button 
-                onClick={() => setError(null)}
-                className="w-full bg-gray-800 hover:bg-gray-700 py-2 rounded-lg transition-colors"
-              >
-                Dismiss
-              </button>
-            </div>
+            )}
           </div>
-        )}
 
-        {/* Sidebar (File Tree) - Hidden in Live App mode on mobile, or based on toggle */}
-        {viewMode === 'code' && (
-          <div className={`
-            absolute md:relative z-20 md:z-auto h-full w-64 bg-gray-925 border-r border-gray-800 flex flex-col transition-transform duration-300
-            ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
-            bg-[#0f141a]
-          `}>
-             <div className="p-4 border-b border-gray-800 flex justify-between items-center">
-               <span className="font-semibold text-gray-400 text-sm">Explorer</span>
-               <button onClick={() => setIsSidebarOpen(false)} className="md:hidden p-1 hover:bg-gray-800 rounded">
-                 <X size={16} />
-               </button>
+          {repoDetails && (
+             <div className="p-3 border-t border-gray-800 bg-gray-900/50">
+                <div className="flex items-center gap-2 text-sm text-gray-300 font-medium truncate">
+                   <div className="w-2 h-2 rounded-full bg-green-500 shrink-0"></div>
+                   {repoDetails.name}
+                </div>
+                <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                   <span>⭐ {repoDetails.stars}</span>
+                   <span>{repoDetails.defaultBranch}</span>
+                </div>
              </div>
-             
-             <div className="flex-1 overflow-y-auto custom-scrollbar p-2">
-               {loading ? (
-                 <div className="space-y-3 p-2 animate-pulse">
-                   {[1,2,3,4].map(i => <div key={i} className="h-4 bg-gray-800 rounded w-3/4"></div>)}
-                 </div>
-               ) : fileTree.length > 0 ? (
-                 <FileTree 
-                    nodes={fileTree} 
-                    onSelectFile={handleFileSelect} 
-                    selectedPath={selectedFile?.path}
-                 />
-               ) : (
-                 <div className="text-center text-gray-500 mt-10 text-sm p-4">
-                   Enter a valid GitHub URL to load files.
-                 </div>
-               )}
-             </div>
-          </div>
-        )}
-
-        {/* Toggle Sidebar Button (Mobile) */}
-        {!isSidebarOpen && viewMode === 'code' && (
-          <button 
-            onClick={() => setIsSidebarOpen(true)}
-            className="absolute left-2 top-2 z-30 p-2 bg-gray-800 rounded-lg shadow-lg md:hidden"
-          >
-            <Menu size={20} />
-          </button>
-        )}
-
-        {/* View Content Area */}
-        <div className="flex-1 overflow-hidden bg-gray-900 relative flex flex-col">
-           {viewMode === 'code' ? (
-             <>
-                {repoDetails && !selectedFile && !loading && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center text-gray-400 p-8 text-center opacity-50 pointer-events-none">
-                    <Github size={64} className="mb-4" />
-                    <h2 className="text-2xl font-bold mb-2">{repoDetails.name}</h2>
-                    <p>{repoDetails.description}</p>
-                  </div>
-                )}
-                <CodeViewer file={selectedFile} repoDetails={repoDetails} />
-             </>
-           ) : (
-             <div className="w-full h-full bg-gray-950 flex flex-col">
-               {repoDetails ? (
-                 <div className="flex-1 relative bg-white">
-                   {/* Preview Controls Header */}
-                   <div className="absolute top-0 left-0 right-0 bg-gray-800 text-xs text-gray-400 p-2 flex justify-between items-center border-b border-gray-700 z-10 h-10">
-                      <div className="flex items-center gap-4">
-                        <div className="flex bg-gray-900 rounded-md p-0.5 border border-gray-700">
-                          {repoDetails.homepage && (
-                            <button 
-                              onClick={() => setPreviewRunner('official')}
-                              className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${previewRunner === 'official' ? 'bg-blue-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
-                            >
-                              <Globe size={12} /> Official
-                            </button>
-                          )}
-                          <button 
-                            onClick={() => setPreviewRunner('stackblitz')}
-                            className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${previewRunner === 'stackblitz' ? 'bg-orange-600 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
-                          >
-                            <Zap size={12} /> StackBlitz
-                          </button>
-                          <button 
-                            onClick={() => setPreviewRunner('codesandbox')}
-                            className={`px-2 py-1 rounded text-xs font-medium flex items-center gap-1.5 transition-all ${previewRunner === 'codesandbox' ? 'bg-gray-700 text-white shadow-sm' : 'text-gray-400 hover:text-gray-200'}`}
-                          >
-                            <Box size={12} /> CodeSandbox
-                          </button>
-                        </div>
-                        
-                        {previewRunner === 'stackblitz' && (
-                           <div className="hidden lg:flex items-center gap-1.5 text-orange-400/80">
-                             <AlertCircle size={12} />
-                             <span className="text-[10px]">Stuck loading? Try CodeSandbox or enable 3rd-party cookies.</span>
-                           </div>
-                        )}
-                      </div>
-
-                      <a href={getAppPreviewUrl().replace('&embed=1', '').replace('embed=1', '')} target="_blank" rel="noopener noreferrer" className="flex items-center gap-1.5 hover:text-white transition-colors px-2">
-                        Open External <ExternalLink size={12} />
-                      </a>
-                   </div>
-
-                   <iframe 
-                      src={getAppPreviewUrl()}
-                      title="App Preview"
-                      className="w-full h-full pt-10"
-                      allow="accelerometer; ambient-light-sensor; camera; encrypted-media; geolocation; gyroscope; hid; microphone; midi; payment; usb; vr; xr-spatial-tracking"
-                      sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts"
-                   />
-                 </div>
-               ) : (
-                 <div className="flex items-center justify-center h-full text-gray-500">
-                    Load a repository to see the live app.
-                 </div>
-               )}
-             </div>
-           )}
+          )}
         </div>
 
-        {/* AI Chat Panel */}
-        {isChatOpen && (
-          <div className="w-96 border-l border-gray-800 bg-gray-900 flex flex-col shrink-0 absolute right-0 h-full z-30 shadow-xl sm:static sm:shadow-none transition-all">
-             <ChatPanel 
-               messages={messages}
-               onSendMessage={handleSendMessage}
-               isStreaming={isStreaming}
-               currentFileName={viewMode === 'code' ? selectedFile?.path : 'Live App Mode'}
-             />
-          </div>
+        {/* Toggle Sidebar Button (when closed) */}
+        {!isSidebarOpen && (
+           <button 
+             onClick={() => setIsSidebarOpen(true)}
+             className="absolute left-2 top-20 z-10 p-2 bg-gray-800 rounded-md border border-gray-700 text-gray-400 hover:text-white"
+           >
+             <Menu size={16} />
+           </button>
         )}
+
+        {/* Center Content */}
+        <div className="flex-1 flex flex-col min-w-0 bg-gray-950 relative">
+          {error && (
+            <div className="absolute inset-x-0 top-0 z-50 p-4">
+              <div className="bg-red-500/10 border border-red-500/20 text-red-200 px-4 py-3 rounded-lg flex items-center gap-2 backdrop-blur-md">
+                <AlertCircle size={20} />
+                {error}
+              </div>
+            </div>
+          )}
+
+          {viewMode === 'preview' && repoDetails ? (
+            <div className="flex-1 flex flex-col bg-gray-900">
+                {/* Live App Toolbar */}
+                <div className="h-10 border-b border-gray-800 bg-gray-850 flex items-center justify-between px-4">
+                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                        <span className="font-semibold text-gray-300">Preview Source:</span>
+                        {previewRunner === 'stackblitz' && 'StackBlitz Container'}
+                        {previewRunner === 'codesandbox' && 'CodeSandbox VM'}
+                        {previewRunner === 'official' && 'Official Deployment'}
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                        {repoDetails.homepage && (
+                            <button 
+                                onClick={() => setPreviewRunner('official')}
+                                className={`p-1.5 rounded transition-colors ${previewRunner === 'official' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
+                                title="Use Official Homepage"
+                            >
+                                <Globe size={14} />
+                            </button>
+                        )}
+                         <button 
+                            onClick={() => setPreviewRunner('stackblitz')}
+                            className={`p-1.5 rounded transition-colors ${previewRunner === 'stackblitz' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
+                            title="Run in StackBlitz (Best for React/Node)"
+                        >
+                            <Zap size={14} />
+                        </button>
+                         <button 
+                            onClick={() => setPreviewRunner('codesandbox')}
+                            className={`p-1.5 rounded transition-colors ${previewRunner === 'codesandbox' ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white hover:bg-gray-700'}`}
+                            title="Run in CodeSandbox (Alternative)"
+                        >
+                            <Box size={14} />
+                        </button>
+                        <div className="w-px h-4 bg-gray-700 mx-1"></div>
+                        <a 
+                            href={getLivePreviewUrl()} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="flex items-center gap-1 text-xs text-gray-400 hover:text-white transition-colors"
+                        >
+                            Open External <ExternalLink size={12} />
+                        </a>
+                    </div>
+                </div>
+
+                {/* Runner Iframe */}
+                <div className="flex-1 bg-black relative">
+                   {previewRunner === 'stackblitz' && (
+                       <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-0">
+                           <div className="text-center p-6 max-w-md">
+                               <Zap size={48} className="mx-auto text-blue-500 mb-4 animate-pulse" />
+                               <h3 className="text-lg font-semibold text-gray-200 mb-2">Booting WebContainer...</h3>
+                               <p className="text-sm text-gray-500">
+                                   If this hangs, ensure 3rd-party cookies are allowed or try switching to CodeSandbox using the icons above.
+                               </p>
+                           </div>
+                       </div>
+                   )}
+                   <iframe
+                        key={previewRunner} // Force re-render on switch
+                        src={getLivePreviewUrl()}
+                        className="w-full h-full border-none relative z-10"
+                        title="Live App Preview"
+                        allow="accelerometer; ambient-light-sensor; camera; encrypted-media; geolocation; gyroscope; hid; microphone; midi; payment; usb; vr; xr-spatial-tracking"
+                        sandbox="allow-forms allow-modals allow-popups allow-presentation allow-same-origin allow-scripts"
+                    />
+                </div>
+            </div>
+          ) : (
+            <CodeViewer 
+                file={selectedFile} 
+                repoDetails={repoDetails}
+            />
+          )}
+        </div>
+
+        {/* Chat Panel */}
+        <div className={`
+          ${isChatOpen ? 'w-96 border-l border-gray-800' : 'w-0'} 
+          bg-gray-900 transition-all duration-300 flex flex-col shrink-0
+        `}>
+          <div className="flex-1 overflow-hidden">
+             {isChatOpen && (
+                 <ChatPanel 
+                    messages={messages} 
+                    onSendMessage={handleSendMessage}
+                    isStreaming={isStreaming}
+                    currentFileName={selectedFile?.path}
+                 />
+             )}
+          </div>
+        </div>
       </div>
     </div>
   );
