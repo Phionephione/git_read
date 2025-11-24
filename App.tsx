@@ -104,23 +104,32 @@ function App() {
         return;
     }
 
-    setSelectedFile(prev => ({ 
-      path: node.path, 
-      content: prev?.path === node.path ? prev.content : '', 
-      loading: true 
-    }));
-
-    try {
-      const content = await fetchFileContent(node.url);
-      setFilesCache(prev => ({ ...prev, [node.path]: content }));
-      setSelectedFile({ path: node.path, content, loading: false });
-    } catch (err) {
-      setSelectedFile({ 
+    // If it's a new local file not in cache yet (edge case), content is empty string initially if not in modifiedFiles
+    // But typically insertFileIntoTree+updateFileContent handles this.
+    
+    // For GitHub files
+    if (node.url) {
+      setSelectedFile(prev => ({ 
         path: node.path, 
-        content: '', 
-        loading: false, 
-        error: 'Failed to load file content' 
-      });
+        content: prev?.path === node.path ? prev.content : '', 
+        loading: true 
+      }));
+
+      try {
+        const content = await fetchFileContent(node.url);
+        setFilesCache(prev => ({ ...prev, [node.path]: content }));
+        setSelectedFile({ path: node.path, content, loading: false });
+      } catch (err) {
+        setSelectedFile({ 
+          path: node.path, 
+          content: '', 
+          loading: false, 
+          error: 'Failed to load file content' 
+        });
+      }
+    } else {
+        // Local new file
+        setSelectedFile({ path: node.path, content: modifiedFiles[node.path] || '', loading: false });
     }
   };
 
@@ -169,7 +178,13 @@ function App() {
       };
 
       const node = findNode(fileTree, path);
-      if (!node) throw new Error(`File ${path} not found in repository.`);
+      if (!node) {
+          // It might be a new file that was just created but not yet in tree? 
+          // Or AI hallucinates.
+          throw new Error(`File ${path} not found in repository.`);
+      }
+
+      if (!node.url) return ""; // Local file without content?
 
       const content = await fetchFileContent(node.url);
       
@@ -177,6 +192,66 @@ function App() {
       setFilesCache(prev => ({ ...prev, [path]: content }));
       return content;
   };
+
+  const insertFileIntoTree = useCallback((nodes: FileNode[], filePath: string): FileNode[] => {
+      const parts = filePath.split('/');
+      const fileName = parts.pop()!;
+      
+      const insertRecursive = (currentNodes: FileNode[], currentDepth: number): FileNode[] => {
+          // Check if we are at the target folder depth
+          if (currentDepth === parts.length) {
+              // Check if file already exists
+              const existingIndex = currentNodes.findIndex(n => n.name === fileName);
+              if (existingIndex !== -1) {
+                  return currentNodes; // Already exists
+              }
+              
+              // Create new file node
+              const newNode: FileNode = {
+                  path: filePath,
+                  name: fileName,
+                  type: 'blob',
+                  // sha/url are optional now
+              };
+              
+              return [...currentNodes, newNode].sort((a, b) => {
+                  if (a.type === b.type) return a.name.localeCompare(b.name);
+                  return a.type === 'tree' ? -1 : 1;
+              });
+          }
+          
+          const folderName = parts[currentDepth];
+          const folderIndex = currentNodes.findIndex(n => n.name === folderName && n.type === 'tree');
+          
+          let updatedNodes = [...currentNodes];
+          
+          if (folderIndex !== -1) {
+              // Folder exists, update its children
+              const folder = updatedNodes[folderIndex];
+              const updatedChildren = insertRecursive(folder.children || [], currentDepth + 1);
+              updatedNodes[folderIndex] = { ...folder, children: updatedChildren };
+          } else {
+              // Folder doesn't exist, create it
+              const folderPath = parts.slice(0, currentDepth + 1).join('/');
+              let newFolder: FileNode = {
+                  path: folderPath,
+                  name: folderName,
+                  type: 'tree',
+                  children: []
+              };
+              newFolder.children = insertRecursive([], currentDepth + 1);
+              updatedNodes.push(newFolder);
+              updatedNodes.sort((a, b) => {
+                  if (a.type === b.type) return a.name.localeCompare(b.name);
+                  return a.type === 'tree' ? -1 : 1;
+              });
+          }
+          
+          return updatedNodes;
+      };
+
+      return insertRecursive(nodes, 0);
+  }, []);
 
   const handleSendMessage = async (text: string, image?: string) => {
     const newUserMsg: ChatMessage = {
@@ -212,6 +287,9 @@ function App() {
 
               if (targetPath) {
                   updateFileContent(targetPath, code);
+                  
+                  // NEW: Update tree to show new file if it was created
+                  setFileTree(prev => insertFileIntoTree(prev, targetPath));
                   
                   // If we updated the currently viewing file, ensure UI reflects it
                   if (selectedFile && targetPath === selectedFile.path) {

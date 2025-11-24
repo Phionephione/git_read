@@ -2,8 +2,8 @@ export interface FileNode {
   path: string;
   name: string;
   type: 'blob' | 'tree';
-  sha: string;
-  url: string;
+  sha?: string;
+  url?: string;
   children?: FileNode[];
   isOpen?: boolean; // For UI state
 }
