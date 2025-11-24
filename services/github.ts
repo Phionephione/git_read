@@ -112,3 +112,60 @@ export const fetchFileContent = async (url: string): Promise<string> => {
     return "Error: Could not decode file content. It might be binary or too large to preview.";
   }
 };
+
+// Helper to encode string to Base64 (UTF-8 safe)
+const utf8_to_b64 = (str: string) => {
+  return btoa(unescape(encodeURIComponent(str)));
+};
+
+export const commitFileToGitHub = async (
+  owner: string, 
+  repo: string, 
+  path: string, 
+  content: string, 
+  token: string, 
+  message: string,
+  branch: string
+) => {
+  // 1. Check if file exists to get SHA (needed for update)
+  let sha: string | undefined;
+  try {
+      const getResponse = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${path}?ref=${branch}`, {
+          headers: {
+              'Authorization': `Bearer ${token}`,
+              'Accept': 'application/vnd.github.v3+json'
+          }
+      });
+      if (getResponse.ok) {
+          const data = await getResponse.json();
+          sha = data.sha;
+      }
+  } catch (e) {
+      // File likely doesn't exist, ignore
+  }
+
+  // 2. PUT request to create/update
+  const body = {
+      message: message,
+      content: utf8_to_b64(content),
+      branch: branch,
+      ...(sha ? { sha } : {}) // Include SHA if updating
+  };
+
+  const response = await fetch(`${GITHUB_API_BASE}/repos/${owner}/${repo}/contents/${path}`, {
+      method: 'PUT',
+      headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/vnd.github.v3+json'
+      },
+      body: JSON.stringify(body)
+  });
+
+  if (!response.ok) {
+      const errorData = await response.json();
+      throw new Error(`GitHub API Error: ${errorData.message}`);
+  }
+
+  return await response.json();
+};

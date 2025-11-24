@@ -1,6 +1,6 @@
 import React, { useState, useCallback } from 'react';
-import { Search, Github, AlertCircle, Layout, MessageSquare, Menu, X, Play, Code2, ExternalLink, Zap, Box, Globe, Sparkles } from 'lucide-react';
-import { parseRepoUrl, fetchRepoDetails, fetchRepoTree, fetchFileContent } from './services/github';
+import { Search, Github, AlertCircle, Layout, MessageSquare, Menu, X, Play, Code2, ExternalLink, Zap, Box, Globe, Sparkles, UploadCloud, Loader2 } from 'lucide-react';
+import { parseRepoUrl, fetchRepoDetails, fetchRepoTree, fetchFileContent, commitFileToGitHub } from './services/github';
 import { createChatStream } from './services/ai';
 import { RepoDetails, FileNode, FileContent, ChatMessage } from './types';
 import FileTree from './components/FileTree';
@@ -22,6 +22,13 @@ function App() {
   const [filesCache, setFilesCache] = useState<Record<string, string>>({});
   const [modifiedFiles, setModifiedFiles] = useState<Record<string, string>>({});
   
+  // Push to GitHub State
+  const [showPushModal, setShowPushModal] = useState(false);
+  const [githubToken, setGithubToken] = useState('');
+  const [commitMessage, setCommitMessage] = useState('Update files via GitGenius');
+  const [isPushing, setIsPushing] = useState(false);
+  const [pushStatus, setPushStatus] = useState<string | null>(null);
+
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isChatOpen, setIsChatOpen] = useState(true);
@@ -155,6 +162,48 @@ function App() {
       // strictly speaking we should re-fetch or store original in cache differently.
       // For now, if discarded, user might need to reload file to see original in cache if they re-open it.
       // But typically discard just affects UI view.
+  };
+
+  const handlePushToGitHub = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!repoDetails || !githubToken) return;
+
+    setIsPushing(true);
+    setPushStatus('Initializing push...');
+    
+    try {
+        const filesToPush = Object.entries(modifiedFiles);
+        let count = 0;
+
+        for (const [path, content] of filesToPush) {
+            setPushStatus(`Pushing ${path} (${count + 1}/${filesToPush.length})...`);
+            
+            await commitFileToGitHub(
+                repoDetails.owner,
+                repoDetails.name,
+                path,
+                content,
+                githubToken,
+                commitMessage,
+                repoDetails.defaultBranch
+            );
+            count++;
+        }
+        
+        setPushStatus('Success! All files updated.');
+        setModifiedFiles({}); // Clear local modifications as they are now remote
+        setTimeout(() => {
+            setShowPushModal(false);
+            setIsPushing(false);
+            setPushStatus(null);
+        }, 1500);
+
+    } catch (err) {
+        setPushStatus(null);
+        setIsPushing(false);
+        setError(err instanceof Error ? err.message : 'Failed to push changes');
+        setShowPushModal(false); // Close modal to show global error
+    }
   };
 
   const handleFetchFileForAI = async (path: string): Promise<string> => {
@@ -390,6 +439,79 @@ function App() {
 
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-gray-100 font-sans selection:bg-blue-500/30">
+      {/* Push to GitHub Modal */}
+      {showPushModal && (
+        <div className="fixed inset-0 z-[60] bg-black/70 flex items-center justify-center p-4 backdrop-blur-sm">
+            <div className="bg-gray-900 border border-gray-700 rounded-xl shadow-2xl max-w-md w-full overflow-hidden animate-in fade-in zoom-in duration-200">
+                <div className="p-6">
+                    <div className="flex items-center justify-between mb-4">
+                        <div className="flex items-center gap-2 text-white font-semibold text-lg">
+                            <Github size={24} />
+                            Push Changes to GitHub
+                        </div>
+                        {!isPushing && (
+                           <button onClick={() => setShowPushModal(false)} className="text-gray-500 hover:text-white">
+                               <X size={20} />
+                           </button>
+                        )}
+                    </div>
+                    
+                    {pushStatus ? (
+                         <div className="flex flex-col items-center justify-center py-8 text-center space-y-4">
+                            {pushStatus.includes('Success') ? (
+                                <div className="w-12 h-12 bg-green-500 rounded-full flex items-center justify-center mb-2">
+                                    <Zap className="text-white" size={24} />
+                                </div>
+                            ) : (
+                                <Loader2 className="animate-spin text-blue-500" size={32} />
+                            )}
+                            <p className="text-gray-300 font-medium">{pushStatus}</p>
+                        </div>
+                    ) : (
+                        <form onSubmit={handlePushToGitHub} className="space-y-4">
+                            <div>
+                                <label className="block text-xs font-medium text-gray-400 mb-1">GitHub Personal Access Token (PAT)</label>
+                                <input 
+                                    type="password"
+                                    value={githubToken}
+                                    onChange={(e) => setGithubToken(e.target.value)}
+                                    placeholder="ghp_xxxxxxxxxxxxxxxxxxxx"
+                                    className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    required
+                                />
+                                <p className="text-[10px] text-gray-500 mt-1">
+                                    Token must have <span className="font-mono bg-gray-800 px-1 rounded">repo</span> scope.
+                                </p>
+                            </div>
+                            <div>
+                                <label className="block text-xs font-medium text-gray-400 mb-1">Commit Message</label>
+                                <input 
+                                    type="text"
+                                    value={commitMessage}
+                                    onChange={(e) => setCommitMessage(e.target.value)}
+                                    className="w-full bg-gray-800 border border-gray-700 rounded-lg p-2.5 text-sm focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                                    required
+                                />
+                            </div>
+                            
+                            <div className="bg-blue-900/20 border border-blue-900/50 p-3 rounded-lg text-xs text-blue-300">
+                                This will directly commit {Object.keys(modifiedFiles).length} changed file(s) to the <strong>{repoDetails?.defaultBranch}</strong> branch.
+                            </div>
+
+                            <button 
+                                type="submit"
+                                className="w-full bg-green-600 hover:bg-green-500 text-white font-medium py-2.5 rounded-lg transition-colors flex items-center justify-center gap-2"
+                            >
+                                <UploadCloud size={18} />
+                                Push {Object.keys(modifiedFiles).length} File(s)
+                            </button>
+                        </form>
+                    )}
+                </div>
+            </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="h-16 border-b border-gray-800 flex items-center px-4 gap-4 bg-gray-950 shrink-0 relative z-20">
         <div className="flex items-center gap-2 font-bold text-xl tracking-tight">
@@ -411,6 +533,17 @@ function App() {
         </form>
 
         <div className="flex items-center gap-3">
+           {/* Push Button (Only if modifications exist) */}
+           {Object.keys(modifiedFiles).length > 0 && (
+               <button 
+                  onClick={() => setShowPushModal(true)}
+                  className="bg-green-600 hover:bg-green-500 text-white px-3 py-1.5 rounded-md text-sm font-medium flex items-center gap-2 shadow-lg shadow-green-900/20 animate-in slide-in-from-top-2 duration-300"
+               >
+                   <UploadCloud size={16} />
+                   Push ({Object.keys(modifiedFiles).length})
+               </button>
+           )}
+
            {/* View Mode Switcher - Only visible when repo is loaded */}
            {repoDetails && (
              <div className="flex bg-gray-900 rounded-lg p-1 border border-gray-700">
