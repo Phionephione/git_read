@@ -10,7 +10,7 @@ const parseDataUrl = (dataUrl: string) => {
   return { mimeType: matches[1], data: matches[2] };
 };
 
-// Define the tool for updating files
+// Tool: Update File
 const updateFileTool: FunctionDeclaration = {
   name: 'update_file',
   description: 'Update the code content of the current file. Use this when the user asks to modify the code based on instructions or an image.',
@@ -30,10 +30,28 @@ const updateFileTool: FunctionDeclaration = {
   },
 };
 
+// Tool: Read File
+const readFileTool: FunctionDeclaration = {
+  name: 'read_file',
+  description: 'Read the content of a file from the repository. Use this to inspect code, check logic, or understand dependencies that are not currently visible.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      path: {
+        type: Type.STRING,
+        description: 'The full path of the file to read (e.g., "src/components/App.tsx")',
+      },
+    },
+    required: ['path'],
+  },
+};
+
 export const createChatStream = async (
   messages: ChatMessage[], 
-  currentFileContext?: { path: string; content: string },
-  onToolCall?: (toolCall: any) => void
+  fileStructure: string[], // List of all file paths in the repo
+  currentFileContext: { path: string; content: string } | undefined,
+  onToolCall: (toolCall: any) => void,
+  onReadFile: (path: string) => Promise<string>
 ): Promise<AsyncIterable<string>> => {
   
   // Using gemini-2.5-flash for fast conversational responses and tool use
@@ -56,43 +74,51 @@ export const createChatStream = async (
     };
   });
 
+  // Limit file list size to avoid context overflow if repo is massive
+  const availableFiles = fileStructure.slice(0, 1500).join('\n');
+  const truncatedWarning = fileStructure.length > 1500 ? `\n...(and ${fileStructure.length - 1500} more files)` : '';
+
+  const systemInstruction = `You are an expert Senior Software Engineer and Code Reviewer. 
+  You are assisting a user in viewing and improving a GitHub repository.
+  
+  OUTPUT FORMATTING:
+  - Use Markdown for all responses.
+  - Use code blocks with language specifiers for code.
+  - Be concise but helpful.
+  
+  CONTEXT AWARENESS:
+  You have access to the following files in the repository:
+  ${availableFiles}${truncatedWarning}
+  
+  TOOLS:
+  - 'read_file': Call this to read the content of any file in the list. You can call this multiple times to gather context.
+  - 'update_file': Call this to modify the currently active file.
+  
+  STRATEGY:
+  - If the user asks about the "app" or "repo" logic, and you don't have the file content in context, use 'read_file' to fetch the relevant files (e.g., index.tsx, App.tsx, package.json).
+  - Don't guess. Read the files.
+  `;
+
   const chat = ai.chats.create({
     model,
     history,
     config: {
-      tools: [{ functionDeclarations: [updateFileTool] }],
-      systemInstruction: `You are an expert Senior Software Engineer and Code Reviewer. 
-      You are assisting a user in viewing and improving a GitHub repository.
-      
-      Output Formatting:
-      - Use Markdown for all responses.
-      - Use code blocks with language specifiers for code.
-      - Be concise but helpful.
-      
-      Capabilities:
-      - You can analyze code.
-      - You can analyze images (screenshots, mockups).
-      - You can MODIFY the current file using the 'update_file' tool.
-      
-      When to use 'update_file':
-      - If the user explicitly asks to "change", "fix", "update", or "implement" something in the current file.
-      - If the user provides an image and asks to "make it look like this".
-      - ALWAYS provide the FULL file content in the 'code' parameter of the tool. Do not provide partial diffs.
-      `
+      tools: [{ functionDeclarations: [updateFileTool, readFileTool] }],
+      systemInstruction
     }
   });
 
   let textPrompt = lastMsg.text;
   
+  // Implicitly provide the current file context if available, so it doesn't have to fetch it
   if (currentFileContext) {
     textPrompt = `
-    [CONTEXT]
-    Current File: ${currentFileContext.path}
-    File Content:
+    [CURRENTLY OPEN FILE]
+    Path: ${currentFileContext.path}
+    Content:
     \`\`\`
     ${currentFileContext.content.slice(0, 30000)} 
     \`\`\`
-    (Content truncated if too long)
     
     [USER QUERY]
     ${lastMsg.text}
@@ -108,28 +134,69 @@ export const createChatStream = async (
     }
   }
 
-  const result = await chat.sendMessageStream({ message: { parts: msgParts } });
-  
-  // Create an async iterable that yields text chunks
   return {
     async *[Symbol.asyncIterator]() {
-      for await (const chunk of result) {
-         const c = chunk as GenerateContentResponse;
-         
-         // Handle Tool Calls
-         if (c.functionCalls && c.functionCalls.length > 0) {
-             for (const call of c.functionCalls) {
-                 if (onToolCall) {
-                     onToolCall(call);
-                     // We yield a system message so the user sees something happened
-                     yield `\n\n*⚡ AI Auto-Update: ${call.args['description'] || 'Updating file...'}*\n\n`;
+      let currentSendPromise = chat.sendMessageStream({ message: { parts: msgParts } });
+
+      // Agentic Loop: Keep processing until the model stops calling tools
+      while (true) {
+          const stream = await currentSendPromise;
+          let toolCalled = false;
+
+          for await (const chunk of stream) {
+             const c = chunk as GenerateContentResponse;
+             
+             // Yield text chunks to user
+             if (c.text) {
+                 yield c.text;
+             }
+
+             // Handle Tool Calls
+             if (c.functionCalls && c.functionCalls.length > 0) {
+                 toolCalled = true;
+                 
+                 for (const call of c.functionCalls) {
+                     if (call.name === 'read_file') {
+                         const path = call.args['path'] as string;
+                         yield `\n\n*Reading file: ${path}...*\n\n`;
+                         
+                         let content = "";
+                         try {
+                            content = await onReadFile(path);
+                         } catch (e) {
+                            content = "Error: Could not read file. It might not exist or is not a text file.";
+                         }
+
+                         // Send tool response back to model
+                         currentSendPromise = chat.sendMessageStream({
+                             functionResponses: [{
+                                 name: call.name,
+                                 id: call.id,
+                                 response: { content: content.slice(0, 30000) } // Limit size
+                             }]
+                         });
+                     } 
+                     else if (call.name === 'update_file') {
+                         onToolCall(call);
+                         yield `\n\n*⚡ AI Auto-Update: ${call.args['description'] || 'Updating file...'}*\n\n`;
+                         
+                         // Send success response
+                         currentSendPromise = chat.sendMessageStream({
+                             functionResponses: [{
+                                 name: call.name,
+                                 id: call.id,
+                                 response: { result: "File updated successfully." }
+                             }]
+                         });
+                     }
                  }
              }
-         }
+          }
 
-         if (c.text) {
-             yield c.text;
-         }
+          // If no tools were called in this turn, we are done
+          if (!toolCalled) {
+              break;
+          }
       }
     }
   };

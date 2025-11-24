@@ -18,7 +18,8 @@ function App() {
   const [viewMode, setViewMode] = useState<'code' | 'preview'>('code');
   const [previewRunner, setPreviewRunner] = useState<'official' | 'stackblitz' | 'codesandbox'>('stackblitz');
   
-  // File Modification State (Map of path -> content)
+  // File Content Cache & Modifications
+  const [filesCache, setFilesCache] = useState<Record<string, string>>({});
   const [modifiedFiles, setModifiedFiles] = useState<Record<string, string>>({});
   
   // Chat State
@@ -28,6 +29,16 @@ function App() {
   
   // Mobile/Layout State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
+
+  // Helper to get all file paths for AI context
+  const getAllFilePaths = (nodes: FileNode[]): string[] => {
+    let paths: string[] = [];
+    nodes.forEach(node => {
+      if (node.type === 'blob') paths.push(node.path);
+      if (node.children) paths.push(...getAllFilePaths(node.children));
+    });
+    return paths;
+  };
 
   const loadRepo = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -47,6 +58,7 @@ function App() {
     setMessages([]); // Reset chat for new repo
     setViewMode('code'); // Reset view mode
     setModifiedFiles({}); // Reset modifications
+    setFilesCache({}); // Reset cache
 
     try {
       const details = await fetchRepoDetails(parsed.owner, parsed.repo);
@@ -82,6 +94,12 @@ function App() {
        setViewMode('code');
     }
 
+    // Check cache first
+    if (filesCache[node.path]) {
+        setSelectedFile({ path: node.path, content: filesCache[node.path], loading: false });
+        return;
+    }
+
     setSelectedFile(prev => ({ 
       path: node.path, 
       content: prev?.path === node.path ? prev.content : '', 
@@ -90,6 +108,7 @@ function App() {
 
     try {
       const content = await fetchFileContent(node.url);
+      setFilesCache(prev => ({ ...prev, [node.path]: content }));
       setSelectedFile({ path: node.path, content, loading: false });
     } catch (err) {
       setSelectedFile({ 
@@ -106,6 +125,11 @@ function App() {
         ...prev,
         [path]: newContent
     }));
+    // Also update cache so subsequent reads get new content
+    setFilesCache(prev => ({
+        ...prev,
+        [path]: newContent
+    }));
   };
 
   const discardFileChanges = (path: string) => {
@@ -114,6 +138,40 @@ function App() {
           delete next[path];
           return next;
       });
+      // We don't revert cache here easily without re-fetching, 
+      // strictly speaking we should re-fetch or store original in cache differently.
+      // For now, if discarded, user might need to reload file to see original in cache if they re-open it.
+      // But typically discard just affects UI view.
+  };
+
+  const handleFetchFileForAI = async (path: string): Promise<string> => {
+      // 1. Check if modified
+      if (modifiedFiles[path]) return modifiedFiles[path];
+      // 2. Check cache
+      if (filesCache[path]) return filesCache[path];
+
+      // 3. Fetch from GitHub
+      // We need the URL. The fileTree has the URL.
+      // Helper to find node
+      const findNode = (nodes: FileNode[], targetPath: string): FileNode | null => {
+          for (const node of nodes) {
+              if (node.path === targetPath) return node;
+              if (node.children) {
+                  const found = findNode(node.children, targetPath);
+                  if (found) return found;
+              }
+          }
+          return null;
+      };
+
+      const node = findNode(fileTree, path);
+      if (!node) throw new Error(`File ${path} not found in repository.`);
+
+      const content = await fetchFileContent(node.url);
+      
+      // Update cache
+      setFilesCache(prev => ({ ...prev, [path]: content }));
+      return content;
   };
 
   const handleSendMessage = async (text: string, image?: string) => {
@@ -129,7 +187,7 @@ function App() {
     setIsStreaming(true);
 
     try {
-      // Pass the currently selected file content (including modifications) as context
+      // Pass the currently selected file context if available
       const currentContent = selectedFile 
           ? (modifiedFiles[selectedFile.path] || selectedFile.content) 
           : '';
@@ -138,20 +196,29 @@ function App() {
         ? { path: selectedFile.path, content: currentContent }
         : undefined;
 
+      // Get full file structure
+      const allPaths = getAllFilePaths(fileTree);
+
       const onToolCall = (toolCall: any) => {
           if (toolCall.name === 'update_file') {
               const { code, description } = toolCall.args;
               if (selectedFile) {
                   updateFileContent(selectedFile.path, code);
-                  // If it's an HTML file, auto-switch to preview to see changes
                   if (selectedFile.path.endsWith('.html')) {
-                      setViewMode('code'); // CodeViewer handles the tab state internally for preview
+                      setViewMode('code'); 
                   }
               }
           }
       };
 
-      const stream = await createChatStream([...messages, newUserMsg], context, onToolCall);
+      // Create stream with agentic capabilities
+      const stream = await createChatStream(
+          [...messages, newUserMsg], 
+          allPaths,
+          context, 
+          onToolCall,
+          handleFetchFileForAI
+      );
       
       let botMsgId = (Date.now() + 1).toString();
       let fullResponse = '';
