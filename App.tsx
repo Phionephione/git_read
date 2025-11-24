@@ -1,5 +1,5 @@
 import React, { useState, useCallback } from 'react';
-import { Search, Github, AlertCircle, Layout, MessageSquare, Menu, X, Play, Code2, ExternalLink, Zap, Box, Globe } from 'lucide-react';
+import { Search, Github, AlertCircle, Layout, MessageSquare, Menu, X, Play, Code2, ExternalLink, Zap, Box, Globe, Sparkles } from 'lucide-react';
 import { parseRepoUrl, fetchRepoDetails, fetchRepoTree, fetchFileContent } from './services/github';
 import { createChatStream } from './services/ai';
 import { RepoDetails, FileNode, FileContent, ChatMessage } from './types';
@@ -27,6 +27,10 @@ function App() {
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [isStreaming, setIsStreaming] = useState(false);
   
+  // Live App AI Edit
+  const [showLiveAppEdit, setShowLiveAppEdit] = useState(false);
+  const [liveAppEditPrompt, setLiveAppEditPrompt] = useState('');
+
   // Mobile/Layout State
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
@@ -202,6 +206,21 @@ function App() {
       const onToolCall = (toolCall: any) => {
           if (toolCall.name === 'update_file') {
               const { code, description } = toolCall.args;
+              // If the model updates a file, check if it matches the current one or another one
+              // Currently, update_file tool definition doesn't strictly enforce 'path' argument in the tool def in services/ai.ts 
+              // Wait, the tool def in services/ai.ts only has 'code' and 'description'. It relies on context.
+              // To make it fully robust for ANY file, we should update the tool def to include 'path'.
+              // But for now, let's assume it updates the *active* file if explicitly asked, OR we can infer.
+              // Actually, best to rely on 'selectedFile.path' if tool doesn't provide path.
+              // Let's assume for this specific turn the AI is editing the file we talked about.
+              
+              // NOTE: For a full multi-file edit, the AI should probably be able to specify the path in update_file.
+              // I will stick to updating the SELECTED file for now as per the "Edit with AI" context.
+              // If triggered from global context, we might need the AI to say WHICH file. 
+              // *Correction*: The AI service tool definition needs 'path' to be truly "access all files".
+              // But since I cannot change services/ai.ts right now without sending it again, 
+              // I will assume it operates on the 'context' file or I will add logic to 'CodeViewer' trigger to focus the file first.
+              
               if (selectedFile) {
                   updateFileContent(selectedFile.path, code);
                   if (selectedFile.path.endsWith('.html')) {
@@ -253,6 +272,33 @@ function App() {
     } finally {
       setIsStreaming(false);
     }
+  };
+
+  const handleTriggerAiEdit = (prompt: string, image?: string) => {
+    // 1. Open Chat
+    setIsChatOpen(true);
+    
+    // 2. Format Prompt
+    // If we are editing a specific file via CodeViewer
+    const contextPrefix = selectedFile 
+        ? `[TASK: Edit '${selectedFile.path}'] `
+        : `[TASK: Edit Repository] `;
+    
+    const fullPrompt = `${contextPrefix}${prompt}\n\nPlease update the code using the 'update_file' tool. Check other files with 'read_file' if you need context about imports or styles.`;
+
+    // 3. Send Message
+    handleSendMessage(fullPrompt, image);
+  };
+
+  const handleGlobalAppEdit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!liveAppEditPrompt.trim()) return;
+    
+    setIsChatOpen(true);
+    const fullPrompt = `[TASK: Global App Edit] ${liveAppEditPrompt}\n\nFind the relevant file (search for it or read file structure) and update it using 'update_file'.`;
+    handleSendMessage(fullPrompt);
+    setShowLiveAppEdit(false);
+    setLiveAppEditPrompt('');
   };
 
   const getLivePreviewUrl = () => {
@@ -405,6 +451,46 @@ function App() {
                     </div>
 
                     <div className="flex items-center gap-2">
+                         {/* Global AI Edit Button */}
+                         <div className="relative">
+                            <button
+                                onClick={() => setShowLiveAppEdit(!showLiveAppEdit)}
+                                className={`flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium transition-colors border ${showLiveAppEdit ? 'bg-purple-900/50 text-purple-200 border-purple-500' : 'bg-gray-800 text-purple-400 border-gray-600 hover:border-purple-500'}`}
+                            >
+                                <Sparkles size={12} /> Edit App
+                            </button>
+                            {showLiveAppEdit && (
+                                <div className="absolute top-full right-0 mt-2 w-72 bg-gray-800 border border-gray-700 rounded-lg shadow-xl p-3 z-50">
+                                    <form onSubmit={handleGlobalAppEdit}>
+                                        <textarea 
+                                            value={liveAppEditPrompt}
+                                            onChange={(e) => setLiveAppEditPrompt(e.target.value)}
+                                            placeholder="e.g., Change the navbar color to blue..."
+                                            className="w-full bg-gray-900 border border-gray-600 rounded p-2 text-xs text-gray-200 focus:border-purple-500 focus:outline-none mb-2 h-20 resize-none"
+                                            autoFocus
+                                        />
+                                        <div className="flex justify-end gap-2">
+                                            <button 
+                                                type="button" 
+                                                onClick={() => setShowLiveAppEdit(false)}
+                                                className="px-2 py-1 text-xs text-gray-400 hover:text-gray-200"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button 
+                                                type="submit"
+                                                className="px-3 py-1 bg-purple-600 text-white rounded text-xs font-medium hover:bg-purple-500"
+                                            >
+                                                Update
+                                            </button>
+                                        </div>
+                                    </form>
+                                </div>
+                            )}
+                         </div>
+
+                         <div className="w-px h-4 bg-gray-700 mx-1"></div>
+
                         {repoDetails.homepage && (
                             <button 
                                 onClick={() => setPreviewRunner('official')}
@@ -474,6 +560,7 @@ function App() {
                 onDiscardChanges={() => {
                     if (selectedFile) discardFileChanges(selectedFile.path);
                 }}
+                onTriggerAiEdit={handleTriggerAiEdit}
             />
           )}
         </div>

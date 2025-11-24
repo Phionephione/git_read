@@ -55,7 +55,11 @@ const ChatPanel: React.FC<ChatPanelProps> = ({ messages, onSendMessage, isStream
         </div>
         <p className="text-xs text-gray-500">
           Powered by Gemini 2.5 Flash. 
-          {currentFileName ? ` Analyzing: ${currentFileName}` : ' Ask about the repo.'}
+          {currentFileName ? (
+             <span title="The AI has access to all files, with focus on the current one.">
+                Analyzing Repo (Context: <span className="text-gray-400">{currentFileName}</span>)
+             </span>
+          ) : ' Analyzing Repository'}
         </p>
       </div>
 

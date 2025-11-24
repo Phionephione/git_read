@@ -2,7 +2,6 @@ import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FileContent, RepoDetails } from '../types';
 import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX, AlertTriangle, Paperclip, Zap, ExternalLink } from 'lucide-react';
-import { modifyCode } from '../services/ai';
 
 interface CodeViewerProps {
   file: FileContent | null;
@@ -10,6 +9,7 @@ interface CodeViewerProps {
   modifiedContent: string | null;
   onUpdateContent: (content: string) => void;
   onDiscardChanges: () => void;
+  onTriggerAiEdit: (prompt: string, image?: string) => void;
 }
 
 const CodeViewer: React.FC<CodeViewerProps> = ({ 
@@ -17,7 +17,8 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
   repoDetails, 
   modifiedContent, 
   onUpdateContent, 
-  onDiscardChanges 
+  onDiscardChanges,
+  onTriggerAiEdit
 }) => {
   const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
   const [forcePreview, setForcePreview] = useState(false);
@@ -26,7 +27,6 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
   const [showAiInput, setShowAiInput] = useState(false);
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiImage, setAiImage] = useState<string | null>(null);
-  const [isModifying, setIsModifying] = useState(false);
   const [includeContext, setIncludeContext] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -43,24 +43,19 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
   const handleAiModify = async () => {
     if (!file || !aiPrompt.trim()) return;
     
-    setIsModifying(true);
-    try {
-      const currentCode = includeContext ? (modifiedContent ?? file.content) : '';
-      const newCode = await modifyCode(currentCode, aiPrompt, file.path, aiImage || undefined);
-      onUpdateContent(newCode);
-      setShowAiInput(false);
-      setAiPrompt('');
-      setAiImage(null);
-      // Switch to preview automatically if it's an HTML file
-      if (file.path.endsWith('.html')) {
-        setActiveTab('preview');
-      }
-    } catch (error) {
-      console.error("Failed to modify code", error);
-      alert("Failed to modify code. Please try again.");
-    } finally {
-      setIsModifying(false);
+    // Construct a rich prompt based on context settings
+    let finalPrompt = aiPrompt;
+    if (!includeContext) {
+        finalPrompt += " (Note: Generate the full file content from scratch, ignoring previous content.)";
     }
+
+    // Trigger the global AI agent which has full repo access
+    onTriggerAiEdit(finalPrompt, aiImage || undefined);
+    
+    // Reset local UI
+    setShowAiInput(false);
+    setAiPrompt('');
+    setAiImage(null);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -269,10 +264,10 @@ const CodeViewer: React.FC<CodeViewerProps> = ({
               </div>
               <button
                 onClick={handleAiModify}
-                disabled={isModifying || !aiPrompt.trim()}
+                disabled={!aiPrompt.trim()}
                 className="bg-purple-600 hover:bg-purple-500 disabled:opacity-50 disabled:hover:bg-purple-600 text-white px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2 transition-colors"
               >
-                {isModifying ? <Loader2 size={16} className="animate-spin" /> : <Sparkles size={16} />}
+                <Sparkles size={16} />
                 Generate
               </button>
               <button 

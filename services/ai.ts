@@ -1,10 +1,10 @@
-import { GoogleGenAI, GenerateContentResponse, FunctionDeclaration, Type } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, FunctionDeclaration, Type, Part, Content } from "@google/genai";
 import { ChatMessage } from '../types';
 
 // Ensure API Key is available
 const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
-const parseDataUrl = (dataUrl: string) => {
+const parseDataUrl = (dataUrl: string): { mimeType: string; data: string } | null => {
   const matches = dataUrl.match(/^data:(.+);base64,(.+)$/);
   if (!matches) return null;
   return { mimeType: matches[1], data: matches[2] };
@@ -13,7 +13,7 @@ const parseDataUrl = (dataUrl: string) => {
 // Tool: Update File
 const updateFileTool: FunctionDeclaration = {
   name: 'update_file',
-  description: 'Update the code content of the current file. Use this when the user asks to modify the code based on instructions or an image.',
+  description: 'Update the code content of the currently active/open file. Use this when the user asks to modify the code. You cannot create new files, only update the one currently being viewed.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -33,7 +33,7 @@ const updateFileTool: FunctionDeclaration = {
 // Tool: Read File
 const readFileTool: FunctionDeclaration = {
   name: 'read_file',
-  description: 'Read the content of a file from the repository. Use this to inspect code, check logic, or understand dependencies that are not currently visible.',
+  description: 'Read the content of a file from the repository. CRITICAL: Use this to inspect code, check logic, or understand dependencies that are not currently visible. Do not guess file contents.',
   parameters: {
     type: Type.OBJECT,
     properties: {
@@ -60,8 +60,8 @@ export const createChatStream = async (
   // Construct a prompt history
   const lastMsg = messages[messages.length - 1];
   
-  const history = messages.slice(0, -1).map(m => {
-    const parts: any[] = [{ text: m.text }];
+  const history: Content[] = messages.slice(0, -1).map(m => {
+    const parts: Part[] = [{ text: m.text }];
     if (m.image) {
       const imgData = parseDataUrl(m.image);
       if (imgData) {
@@ -87,16 +87,19 @@ export const createChatStream = async (
   - Be concise but helpful.
   
   CONTEXT AWARENESS:
-  You have access to the following files in the repository:
+  You have access to the full file structure of the repository:
   ${availableFiles}${truncatedWarning}
   
   TOOLS:
-  - 'read_file': Call this to read the content of any file in the list. You can call this multiple times to gather context.
-  - 'update_file': Call this to modify the currently active file.
+  - 'read_file': Call this to read the content of ANY file in the list. You MUST call this to gather context if you don't have the file content yet.
+  - 'update_file': Call this to modify the currently active file (the one the user is looking at).
   
-  STRATEGY:
-  - If the user asks about the "app" or "repo" logic, and you don't have the file content in context, use 'read_file' to fetch the relevant files (e.g., index.tsx, App.tsx, package.json).
-  - Don't guess. Read the files.
+  CRITICAL STRATEGY:
+  1. **Full App Awareness**: The user might be looking at a specific file (e.g., README.md), but asking about the whole app (e.g., "How can I improve this?"). 
+     - DO NOT limit your answer to just the open file.
+     - IF the user asks a general question, use 'read_file' to check key files like 'package.json', 'src/App.tsx', 'index.html', or 'src/index.tsx' to understand the project architecture FIRST.
+  2. **Don't Guess**: If you need to know how a component is implemented, read the file.
+  3. **Updating**: You can only update the *active* file. If the user wants to update a different file, ask them to open it first, or explain what changes they should make manually.
   `;
 
   const chat = ai.chats.create({
@@ -122,11 +125,13 @@ export const createChatStream = async (
     
     [USER QUERY]
     ${lastMsg.text}
+    
+    (Reminder: You can read other files using the 'read_file' tool if needed to answer this query.)
     `;
   }
 
   // Construct message with potential image part
-  const msgParts: any[] = [{ text: textPrompt }];
+  const msgParts: Part[] = [{ text: textPrompt }];
   if (lastMsg.image) {
     const imgData = parseDataUrl(lastMsg.image);
     if (imgData) {
@@ -136,7 +141,7 @@ export const createChatStream = async (
 
   return {
     async *[Symbol.asyncIterator]() {
-      let currentSendPromise = chat.sendMessageStream({ message: { parts: msgParts } });
+      let currentSendPromise = chat.sendMessageStream({ message: msgParts });
 
       // Agentic Loop: Keep processing until the model stops calling tools
       while (true) {
@@ -168,12 +173,17 @@ export const createChatStream = async (
                          }
 
                          // Send tool response back to model
-                         currentSendPromise = chat.sendMessageStream({
-                             functionResponses: [{
+                         // Correctly format as a Part with functionResponse
+                         const responsePart: Part = {
+                             functionResponse: {
                                  name: call.name,
                                  id: call.id,
                                  response: { content: content.slice(0, 30000) } // Limit size
-                             }]
+                             }
+                         };
+                         
+                         currentSendPromise = chat.sendMessageStream({
+                             message: [responsePart]
                          });
                      } 
                      else if (call.name === 'update_file') {
@@ -181,12 +191,16 @@ export const createChatStream = async (
                          yield `\n\n*⚡ AI Auto-Update: ${call.args['description'] || 'Updating file...'}*\n\n`;
                          
                          // Send success response
-                         currentSendPromise = chat.sendMessageStream({
-                             functionResponses: [{
+                         const responsePart: Part = {
+                             functionResponse: {
                                  name: call.name,
                                  id: call.id,
                                  response: { result: "File updated successfully." }
-                             }]
+                             }
+                         };
+                         
+                         currentSendPromise = chat.sendMessageStream({
+                             message: [responsePart]
                          });
                      }
                  }
@@ -235,7 +249,7 @@ export const modifyCode = async (code: string, instruction: string, filename: st
   Generate the full code for the file "${filename}".
   `;
 
-  const msgParts: any[] = [{ text: textPrompt }];
+  const msgParts: Part[] = [{ text: textPrompt }];
   
   if (image) {
     const imgData = parseDataUrl(image);
@@ -244,7 +258,7 @@ export const modifyCode = async (code: string, instruction: string, filename: st
     }
   }
 
-  const result = await chat.sendMessage({ message: { parts: msgParts } });
+  const result = await chat.sendMessage({ message: msgParts });
   let text = result.text || '';
   
   // Robustly strip markdown code blocks if the model includes them
