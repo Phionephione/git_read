@@ -1,4 +1,4 @@
-import { GoogleGenAI, GenerateContentResponse } from "@google/genai";
+import { GoogleGenAI, GenerateContentResponse, FunctionDeclaration, Type } from "@google/genai";
 import { ChatMessage } from '../types';
 
 // Ensure API Key is available
@@ -10,12 +10,33 @@ const parseDataUrl = (dataUrl: string) => {
   return { mimeType: matches[1], data: matches[2] };
 };
 
+// Define the tool for updating files
+const updateFileTool: FunctionDeclaration = {
+  name: 'update_file',
+  description: 'Update the code content of the current file. Use this when the user asks to modify the code based on instructions or an image.',
+  parameters: {
+    type: Type.OBJECT,
+    properties: {
+      code: {
+        type: Type.STRING,
+        description: 'The full modified code content. Do not include markdown formatting.',
+      },
+      description: {
+        type: Type.STRING,
+        description: 'A brief description of the changes made.',
+      }
+    },
+    required: ['code', 'description'],
+  },
+};
+
 export const createChatStream = async (
   messages: ChatMessage[], 
-  currentFileContext?: { path: string; content: string }
+  currentFileContext?: { path: string; content: string },
+  onToolCall?: (toolCall: any) => void
 ): Promise<AsyncIterable<string>> => {
   
-  // Using gemini-2.5-flash for fast conversational responses
+  // Using gemini-2.5-flash for fast conversational responses and tool use
   const model = 'gemini-2.5-flash';
   
   // Construct a prompt history
@@ -39,6 +60,7 @@ export const createChatStream = async (
     model,
     history,
     config: {
+      tools: [{ functionDeclarations: [updateFileTool] }],
       systemInstruction: `You are an expert Senior Software Engineer and Code Reviewer. 
       You are assisting a user in viewing and improving a GitHub repository.
       
@@ -47,8 +69,15 @@ export const createChatStream = async (
       - Use code blocks with language specifiers for code.
       - Be concise but helpful.
       
-      If provided with file context, specifically refer to lines of code if possible.
-      If provided with an image, analyze the visual elements, UI/UX, or errors shown.
+      Capabilities:
+      - You can analyze code.
+      - You can analyze images (screenshots, mockups).
+      - You can MODIFY the current file using the 'update_file' tool.
+      
+      When to use 'update_file':
+      - If the user explicitly asks to "change", "fix", "update", or "implement" something in the current file.
+      - If the user provides an image and asks to "make it look like this".
+      - ALWAYS provide the FULL file content in the 'code' parameter of the tool. Do not provide partial diffs.
       `
     }
   });
@@ -86,6 +115,18 @@ export const createChatStream = async (
     async *[Symbol.asyncIterator]() {
       for await (const chunk of result) {
          const c = chunk as GenerateContentResponse;
+         
+         // Handle Tool Calls
+         if (c.functionCalls && c.functionCalls.length > 0) {
+             for (const call of c.functionCalls) {
+                 if (onToolCall) {
+                     onToolCall(call);
+                     // We yield a system message so the user sees something happened
+                     yield `\n\n*⚡ AI Auto-Update: ${call.args['description'] || 'Updating file...'}*\n\n`;
+                 }
+             }
+         }
+
          if (c.text) {
              yield c.text;
          }

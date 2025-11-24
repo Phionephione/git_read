@@ -18,6 +18,9 @@ function App() {
   const [viewMode, setViewMode] = useState<'code' | 'preview'>('code');
   const [previewRunner, setPreviewRunner] = useState<'official' | 'stackblitz' | 'codesandbox'>('stackblitz');
   
+  // File Modification State (Map of path -> content)
+  const [modifiedFiles, setModifiedFiles] = useState<Record<string, string>>({});
+  
   // Chat State
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [isChatOpen, setIsChatOpen] = useState(true);
@@ -43,6 +46,7 @@ function App() {
     setSelectedFile(null);
     setMessages([]); // Reset chat for new repo
     setViewMode('code'); // Reset view mode
+    setModifiedFiles({}); // Reset modifications
 
     try {
       const details = await fetchRepoDetails(parsed.owner, parsed.repo);
@@ -75,8 +79,6 @@ function App() {
 
     // Reset view to code when selecting a file (unless we are already in live app mode)
     if (viewMode === 'preview' && previewRunner !== 'official') {
-       // If user clicks a file while in "Live App" mode, we might want to stay there 
-       // or switch back to code. For now, let's switch back to code to see the file.
        setViewMode('code');
     }
 
@@ -99,6 +101,21 @@ function App() {
     }
   };
 
+  const updateFileContent = (path: string, newContent: string) => {
+    setModifiedFiles(prev => ({
+        ...prev,
+        [path]: newContent
+    }));
+  };
+
+  const discardFileChanges = (path: string) => {
+      setModifiedFiles(prev => {
+          const next = { ...prev };
+          delete next[path];
+          return next;
+      });
+  };
+
   const handleSendMessage = async (text: string, image?: string) => {
     const newUserMsg: ChatMessage = {
       id: Date.now().toString(),
@@ -112,12 +129,29 @@ function App() {
     setIsStreaming(true);
 
     try {
-      // Pass the currently selected file content as context if available
+      // Pass the currently selected file content (including modifications) as context
+      const currentContent = selectedFile 
+          ? (modifiedFiles[selectedFile.path] || selectedFile.content) 
+          : '';
+
       const context = selectedFile && !selectedFile.loading && !selectedFile.error 
-        ? { path: selectedFile.path, content: selectedFile.content }
+        ? { path: selectedFile.path, content: currentContent }
         : undefined;
 
-      const stream = await createChatStream([...messages, newUserMsg], context);
+      const onToolCall = (toolCall: any) => {
+          if (toolCall.name === 'update_file') {
+              const { code, description } = toolCall.args;
+              if (selectedFile) {
+                  updateFileContent(selectedFile.path, code);
+                  // If it's an HTML file, auto-switch to preview to see changes
+                  if (selectedFile.path.endsWith('.html')) {
+                      setViewMode('code'); // CodeViewer handles the tab state internally for preview
+                  }
+              }
+          }
+      };
+
+      const stream = await createChatStream([...messages, newUserMsg], context, onToolCall);
       
       let botMsgId = (Date.now() + 1).toString();
       let fullResponse = '';
@@ -366,6 +400,13 @@ function App() {
             <CodeViewer 
                 file={selectedFile} 
                 repoDetails={repoDetails}
+                modifiedContent={selectedFile ? (modifiedFiles[selectedFile.path] || null) : null}
+                onUpdateContent={(content) => {
+                    if (selectedFile) updateFileContent(selectedFile.path, content);
+                }}
+                onDiscardChanges={() => {
+                    if (selectedFile) discardFileChanges(selectedFile.path);
+                }}
             />
           )}
         </div>

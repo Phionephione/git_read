@@ -1,17 +1,26 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import { FileContent, RepoDetails } from '../types';
-import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX, AlertTriangle, Paperclip } from 'lucide-react';
+import { Loader2, Eye, Code2, Sparkles, X, RefreshCw, FileText, FileX, AlertTriangle, Paperclip, Zap, ExternalLink } from 'lucide-react';
 import { modifyCode } from '../services/ai';
 
 interface CodeViewerProps {
   file: FileContent | null;
   repoDetails: RepoDetails | null;
+  modifiedContent: string | null;
+  onUpdateContent: (content: string) => void;
+  onDiscardChanges: () => void;
 }
 
-const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
+const CodeViewer: React.FC<CodeViewerProps> = ({ 
+  file, 
+  repoDetails, 
+  modifiedContent, 
+  onUpdateContent, 
+  onDiscardChanges 
+}) => {
   const [activeTab, setActiveTab] = useState<'code' | 'preview'>('code');
-  const [customContent, setCustomContent] = useState<string | null>(null);
+  const [forcePreview, setForcePreview] = useState(false);
   
   // AI Edit State
   const [showAiInput, setShowAiInput] = useState(false);
@@ -23,12 +32,12 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
 
   // Reset state when file changes
   useEffect(() => {
-    setCustomContent(null);
     setActiveTab('code');
     setShowAiInput(false);
     setAiPrompt('');
     setAiImage(null);
     setIncludeContext(true);
+    setForcePreview(false);
   }, [file?.path]);
 
   const handleAiModify = async () => {
@@ -36,9 +45,9 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     
     setIsModifying(true);
     try {
-      const currentCode = includeContext ? (customContent ?? file.content) : '';
+      const currentCode = includeContext ? (modifiedContent ?? file.content) : '';
       const newCode = await modifyCode(currentCode, aiPrompt, file.path, aiImage || undefined);
-      setCustomContent(newCode);
+      onUpdateContent(newCode);
       setShowAiInput(false);
       setAiPrompt('');
       setAiImage(null);
@@ -92,7 +101,7 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     );
   }
 
-  const contentToRender = customContent ?? file.content;
+  const contentToRender = modifiedContent ?? file.content;
   const isHtml = file.path.endsWith('.html');
   const isMarkdown = file.path.endsWith('.md');
   const canPreview = isHtml || isMarkdown;
@@ -110,7 +119,6 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     if (!repoDetails || !isHtml) return contentToRender;
     
     // 1. Calculate Base URL for the specific directory of this file
-    // Example: if file is "src/pages/index.html", base is ".../src/pages/"
     const pathParts = file.path.split('/');
     pathParts.pop(); // Remove filename
     const dirPath = pathParts.join('/');
@@ -128,13 +136,17 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
     );
 
     // 3. Inject <base> tag for relative paths (./ or just filename)
+    // Using a regex to find head tag case-insensitively
     const baseTag = `<base href="${cdnBase}" target="_blank" />`;
+    const headRegex = /<head[^>]*>/i;
     
-    if (processedContent.includes('<head>')) {
-      return processedContent.replace('<head>', `<head>${baseTag}`);
+    if (headRegex.test(processedContent)) {
+      processedContent = processedContent.replace(headRegex, (match) => `${match}${baseTag}`);
     } else {
-      return `<!DOCTYPE html><html><head>${baseTag}</head><body>${processedContent}</body></html>`;
+      processedContent = `<!DOCTYPE html><html><head>${baseTag}</head><body>${processedContent}</body></html>`;
     }
+
+    return processedContent;
   };
 
   const transformMarkdownUrl = (url: string) => {
@@ -162,7 +174,7 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
       <div className="shrink-0 bg-gray-800 border-b border-gray-700 px-4 py-2 flex justify-between items-center">
         <div className="flex items-center gap-4">
           <span className="text-sm text-gray-300 font-mono font-medium">{file.path}</span>
-          {customContent && (
+          {modifiedContent && (
              <span className="text-xs bg-blue-900 text-blue-200 px-2 py-0.5 rounded-full border border-blue-700">Modified</span>
           )}
         </div>
@@ -194,12 +206,12 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
              className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 transition-all border 
                ${showAiInput ? 'bg-purple-900/50 text-purple-200 border-purple-500' : 'bg-gray-800 text-purple-400 border-gray-600 hover:bg-gray-750 hover:border-purple-500/50'}`}
            >
-             <Sparkles size={14} /> {customContent ? 'Modify Again' : 'Edit with AI'}
+             <Sparkles size={14} /> {modifiedContent ? 'Modify Again' : 'Edit with AI'}
            </button>
            
-           {customContent && (
+           {modifiedContent && (
              <button 
-               onClick={() => setCustomContent(null)}
+               onClick={onDiscardChanges}
                className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded-lg transition-colors"
                title="Discard Changes"
              >
@@ -305,13 +317,39 @@ const CodeViewer: React.FC<CodeViewerProps> = ({ file, repoDetails }) => {
         {activeTab === 'preview' && canPreview ? (
           <div className="h-full w-full bg-white relative">
             {/* Framework Warning Overlay */}
-            {isFrameworkFile && (
-                <div className="absolute inset-x-0 top-0 z-10 bg-yellow-900/90 border-b border-yellow-700 p-3 text-yellow-200 text-xs flex items-center justify-center gap-2 backdrop-blur-sm">
-                    <AlertTriangle size={14} />
-                    <span>
-                        <strong>Note:</strong> This looks like a framework file (React/Vue/etc). 
-                        Browsers cannot run source code directly. This preview may fail or show a blank screen.
-                    </span>
+            {isFrameworkFile && !forcePreview && (
+                <div className="absolute inset-0 z-10 bg-gray-900/95 flex flex-col items-center justify-center p-8 text-center backdrop-blur-sm">
+                    <AlertTriangle size={48} className="text-yellow-500 mb-4" />
+                    <h3 className="text-xl font-bold text-white mb-2">Framework Detected</h3>
+                    <p className="text-gray-400 max-w-md mb-6">
+                        This looks like a <strong>React/Vue/Vite</strong> file. Browsers cannot run this code directly.
+                    </p>
+                    <div className="flex gap-4">
+                        <a 
+                           href={`https://stackblitz.com/github/${repoDetails?.owner}/${repoDetails?.name}?embed=1&view=preview`}
+                           target="_blank"
+                           rel="noreferrer"
+                           className="flex items-center gap-2 bg-blue-600 hover:bg-blue-500 text-white px-5 py-2.5 rounded-lg font-medium transition-colors"
+                        >
+                           <Zap size={18} />
+                           Open in StackBlitz
+                        </a>
+                        <a 
+                           href={`https://codesandbox.io/embed/github/${repoDetails?.owner}/${repoDetails?.name}?view=preview`}
+                           target="_blank"
+                           rel="noreferrer"
+                           className="flex items-center gap-2 bg-gray-800 hover:bg-gray-700 text-white px-5 py-2.5 rounded-lg font-medium transition-colors border border-gray-700"
+                        >
+                           <ExternalLink size={18} />
+                           CodeSandbox
+                        </a>
+                    </div>
+                    <button 
+                       onClick={() => setForcePreview(true)}
+                       className="mt-6 text-sm text-gray-500 hover:text-gray-300 underline"
+                    >
+                        Attempt to preview anyway (likely to fail)
+                    </button>
                 </div>
             )}
             
